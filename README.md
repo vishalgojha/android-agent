@@ -15,7 +15,8 @@
 11. [WhatsApp Integration](./11-whatsapp-integration.md)
 12. [Simple Automation](./12-simple-automation.md) - User Guide
 13. [All Integrations](./13-all-integrations.md)
-14. [Tasker Automation Engine](./14-tasker-automation-engine.md) - Code Implementation 🆕
+14. [Tasker Automation Engine](./14-tasker-automation-engine.md) - Code Implementation
+15. [Installation Guide](./15-installation-guide.md) - How to install on mobile 🆕
 
 ## Quick Start
 
