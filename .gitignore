@@ -1,6 +1,5 @@
 .gradle/
 **/build/
-dist/
 dist-smoke*/
 local.properties
 .idea/
