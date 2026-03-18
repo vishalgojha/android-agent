@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Android Assistant</string>
+    <string-array name="wake_words">
+        <item>hey assistant</item>
+        <item>okay assistant</item>
+        <item>hey agent</item>
+    </string-array>
+</resources>
+

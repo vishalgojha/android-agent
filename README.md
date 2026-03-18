@@ -1,70 +1,282 @@
-# AI Personal Assistant for Android - Complete Guide
+## AndroidAssistant Android App
 
-## Table of Contents
+Status: **extremely alpha**. The app is actively being rebuilt from the ground up.
 
-1. [Project Architecture](./01-architecture.md)
-2. [Android Setup & Configuration](./02-android-setup.md)
-3. [Core Components Implementation](./03-core-components.md)
-4. [AI Integration (Cloud & On-Device)](./04-ai-integration.md)
-5. [Privacy & Security](./05-privacy-security.md)
-6. [Battery Optimization](./06-battery-optimization.md)
-7. [UI/UX Implementation](./07-ui-ux.md)
-8. [Testing & Deployment](./08-testing-deployment.md)
-9. [OpenRouter Integration](./09-openrouter-integration.md)
-10. [Vision Capabilities](./10-vision-capabilities.md)
-11. [WhatsApp Integration](./11-whatsapp-integration.md)
-12. [Simple Automation](./12-simple-automation.md) - User Guide
-13. [All Integrations](./13-all-integrations.md)
-14. [Tasker Automation Engine](./14-tasker-automation-engine.md) - Code Implementation
-15. [Installation Guide](./15-installation-guide.md) - How to install on mobile 🆕
+### Rebuild Checklist
 
-## Quick Start
+- [x] New 4-step onboarding flow
+- [x] Connect tab with `Setup Code` + `Manual` modes
+- [x] Encrypted persistence for gateway setup/auth state
+- [x] Chat UI restyled
+- [x] Settings UI restyled and de-duplicated (gateway controls moved to Connect)
+- [x] QR code scanning in onboarding
+- [x] Performance improvements
+- [x] Streaming support in chat UI
+- [x] Request camera/location and other permissions in onboarding/settings flow
+- [x] Push notifications for gateway/chat status updates
+- [x] Security hardening (biometric lock, token handling, safer defaults)
+- [x] Voice tab full functionality
+- [x] Screen tab full functionality
+- [ ] Full end-to-end QA and release hardening
 
-1. Read architecture overview
-2. Set up Android project
-3. Implement core components
-4. Add AI integration
-5. Test and deploy
+## Open in Android Studio
 
-## Prerequisites
+- Open the repository root folder.
 
-- Android Studio Hedgehog or newer
-- Kotlin 1.9+
-- Minimum SDK 26 (Android 8.0)
-- Target SDK 34 (Android 14)
+## Build / Run
 
-## Key Features
+```bash
+./gradlew :app:assembleDebug
+./gradlew :app:installDebug
+./gradlew :app:testDebugUnitTest
+```
 
-✅ Silent background operation  
-✅ Voice & text input  
-✅ **Vision capabilities** - Analyze images, read text, identify objects  
-✅ **Simple automation** - "When X happens, do Y" (Tasker-style, no coding!)  
-✅ **Automation engine code** - Production-ready Kotlin implementation 🆕  
-✅ **WhatsApp reading** - Hear messages spoken aloud automatically  
-✅ Context awareness  
-✅ Learning from user behavior  
-✅ Privacy-first design  
-✅ Battery efficient  
+## Kotlin Lint + Format
 
-## AI Provider Options
+```bash
+pnpm android:lint
+pnpm android:format
+```
 
-| Provider | Best For | Cost | Offline |
-|----------|----------|------|---------|
-| **OpenRouter** ⭐ | Multiple models, flexibility | Free tier available | ❌ |
-| **OpenAI** | Quality, reliability | $0.50-$10/1M tokens | ❌ |
-| **Gemini** | Google ecosystem | Free-$5/1M tokens | ❌ |
-| **On-Device** | Privacy, offline | Free | ✅ |
+Android framework/resource lint (separate pass):
 
-**Note:** "Free tier" means real, working models at no cost - not mock data.
+```bash
+pnpm android:lint:android
+```
 
-## Quick Start with OpenRouter
+Direct Gradle tasks:
 
-1. **Get API Key**: Visit [openrouter.ai](https://openrouter.ai) → Sign Up → Create Key
-2. **Configure**: Settings → AI Provider → OpenRouter → Paste API key
-3. **Choose Model**: Start with free tier (Llama 3 8B or Mistral 7B)
-4. **Test**: Ask a question and verify response
-5. **Upgrade**: Switch to paid models for better quality
+```bash
+./gradlew :app:ktlintCheck :benchmark:ktlintCheck
+./gradlew :app:ktlintFormat :benchmark:ktlintFormat
+./gradlew :app:lintDebug
+```
 
----
+`gradlew` auto-detects the Android SDK at `~/Library/Android/sdk` (macOS default) if `ANDROID_SDK_ROOT` / `ANDROID_HOME` are unset.
 
-*Each module contains production-ready code examples.*
+## Macrobenchmark (Startup + Frame Timing)
+
+```bash
+./gradlew :benchmark:connectedDebugAndroidTest
+```
+
+Reports are written under:
+
+- `benchmark/build/reports/androidTests/connected/`
+
+## Perf CLI (low-noise)
+
+Deterministic startup measurement + hotspot extraction with compact CLI output:
+
+```bash
+./scripts/perf-startup-benchmark.sh
+./scripts/perf-startup-hotspots.sh
+```
+
+Benchmark script behavior:
+
+- Runs only `StartupMacrobenchmark#coldStartup` (10 iterations).
+- Prints median/min/max/COV in one line.
+- Writes timestamped snapshot JSON to `benchmark/results/`.
+- Auto-compares with previous local snapshot (or pass explicit baseline: `--baseline <old-benchmarkData.json>`).
+- When `dist/lib/mlc4j` is present, app builds automatically switch to `arm64-v8a` only because MLC Android runtime artifacts are arm64-only today.
+
+## On-device Phi (MLC)
+
+The repo now includes a repo-local `mlc-package-config.json` for `Phi-3.5-mini-instruct-q4f16_0-MLC` and Gradle wiring for `dist/lib/mlc4j`.
+
+Current behavior:
+
+- Normal app builds do not require `mlc_llm`.
+- Once `dist/lib/mlc4j/` exists, `settings.gradle.kts` auto-includes `:mlc4j` and `app` depends on it.
+- Phi-3.5 weights are configured for bundled packaging. Re-running `prepareMlcAndroid` will also populate `dist/bundle/`, which substantially increases final app size.
+
+Prepare the Android MLC runtime:
+
+```bash
+export MLC_LLM_SOURCE_DIR=/absolute/path/to/mlc-llm
+./gradlew prepareMlcAndroid
+```
+
+Optional:
+
+- Set `MLC_JIT_POLICY=REDO` to force a rebuild after compiler/runtime upgrades.
+- Override the Python interpreter with `-Pandroidassistant.mlc.python=/absolute/path/to/python`.
+- Override helper env passthrough with:
+  `-Pandroidassistant.mlc.pythonPath=...`,
+  `-Pandroidassistant.mlc.libraryPath=...`,
+  `-Pandroidassistant.mlc.androidNdk=...`,
+  `-Pandroidassistant.mlc.tvmNdkCc=...`.
+
+Windows helper:
+
+```powershell
+pwsh ./scripts/package-mlc-android.ps1 -MlcLlmSourceDir C:\path\to\mlc-llm
+```
+
+On Windows the helper auto-detects the repo-local `.venv-mlc`, `.native-dlls/zstd.dll`, Android Studio JBR, the newest SDK NDK, and a sibling `../mlc-llm` checkout when present. It then runs `python -m mlc_llm package --package-config ./mlc-package-config.json --output ./dist` through Gradle, while still allowing overrides via the script parameters or `-Pandroidassistant.mlc.*` properties.
+
+What to expect after packaging:
+
+- `dist/lib/mlc4j/build.gradle`
+- `dist/lib/mlc4j/output/arm64-v8a/libtvm4j_runtime_packed.so`
+- `dist/lib/mlc4j/output/tvm4j_core.jar`
+- `dist/lib/mlc4j/src/main/assets/mlc-app-config.json`
+
+Bundled-weight note:
+
+- `bundle_weight` is now enabled for Phi-3.5 in `mlc-package-config.json`.
+- You must re-run packaging after changing model config so `dist/bundle/` is regenerated alongside `dist/lib/mlc4j/`.
+- The Gradle packaging flow now strips `.git/` and `.gitattributes` metadata from bundled model assets before APK packaging.
+- Expect a very large APK / install footprint when weights are bundled directly.
+
+Hotspot script behavior:
+
+- Ensures debug app installed, captures startup `simpleperf` data for `.MainActivity`.
+- Prints top DSOs, top symbols, and key app-path clues (Compose/MainActivity/WebView).
+- Writes raw `perf.data` path for deeper follow-up if needed.
+
+## Run on a Real Android Phone (USB)
+
+1) On phone, enable **Developer options** + **USB debugging**.
+2) Connect by USB and accept the debugging trust prompt on phone.
+3) Verify ADB can see the device:
+
+```bash
+adb devices -l
+```
+
+4) Install + launch debug build:
+
+```bash
+pnpm android:install
+pnpm android:run
+```
+
+If `adb devices -l` shows `unauthorized`, re-plug and accept the trust prompt again.
+
+### USB-only gateway testing (no LAN dependency)
+
+Use `adb reverse` so Android `localhost:18789` tunnels to your laptop `localhost:18789`.
+
+Terminal A (gateway):
+
+```bash
+pnpm androidassistant gateway --port 18789 --verbose
+```
+
+Terminal B (USB tunnel):
+
+```bash
+adb reverse tcp:18789 tcp:18789
+```
+
+Then in app **Connect → Manual**:
+
+- Host: `127.0.0.1`
+- Port: `18789`
+- TLS: off
+
+## Hot Reload / Fast Iteration
+
+This app is native Kotlin + Jetpack Compose.
+
+- For Compose UI edits: use Android Studio **Live Edit** on a debug build (works on physical devices; project `minSdk=31` already meets API requirement).
+- For many non-structural code/resource changes: use Android Studio **Apply Changes**.
+- For structural/native/manifest/Gradle changes: do full reinstall (`pnpm android:run`).
+- Canvas web content already supports live reload when loaded from Gateway `__androidassistant__/canvas/` (see `docs/platforms/android.md`).
+
+## Connect / Pair
+
+1) Start the gateway (on your main machine):
+
+```bash
+pnpm androidassistant gateway --port 18789 --verbose
+```
+
+2) In the Android app:
+
+- Open the **Connect** tab.
+- Use **Setup Code** or **Manual** mode to connect.
+- If `androidassistant qr` fails with `Gateway is only bound to loopback`, rerun it with a reachable URL:
+
+```bash
+androidassistant qr --public-url wss://gateway.example.com
+```
+
+Or persist the same value under `plugins.entries["device-pair"].config.publicUrl`, or expose the gateway on LAN/Tailscale.
+
+3) Approve pairing (on the gateway machine):
+
+```bash
+androidassistant devices list
+androidassistant devices approve <requestId>
+```
+
+More details: `docs/platforms/android.md`.
+
+## Permissions
+
+- Discovery:
+  - Android 13+ (`API 33+`): `NEARBY_WIFI_DEVICES`
+  - Android 12 and below: `ACCESS_FINE_LOCATION` (required for NSD scanning)
+- Foreground service notification (Android 13+): `POST_NOTIFICATIONS`
+- Camera:
+  - `CAMERA` for `camera.snap` and `camera.clip`
+  - `RECORD_AUDIO` for `camera.clip` when `includeAudio=true`
+
+## Integration Capability Test (Preconditioned)
+
+This suite assumes setup is already done manually. It does **not** install/run/pair automatically.
+
+Pre-req checklist:
+
+1) Gateway is running and reachable from the Android app.
+2) Android app is connected to that gateway and `androidassistant nodes status` shows it as paired + connected.
+3) App stays unlocked and in foreground for the whole run.
+4) Open the app **Screen** tab and keep it active during the run (canvas/A2UI commands require the canvas WebView attached there).
+5) Grant runtime permissions for capabilities you expect to pass (camera/mic/location/notification listener/location, etc.).
+6) No interactive system dialogs should be pending before test start.
+7) Canvas host is enabled and reachable from the device (do not run gateway with `ANDROID_ASSISTANT_SKIP_CANVAS_HOST=1`; startup logs should include `canvas host mounted at .../__androidassistant__/`).
+8) Local operator test client pairing is approved. If first run fails with `pairing required`, approve latest pending device pairing request, then rerun:
+9) For A2UI checks, keep the app on **Screen** tab; the node now auto-refreshes canvas capability once on first A2UI reachability failure (TTL-safe retry).
+
+```bash
+androidassistant devices list
+androidassistant devices approve --latest
+```
+
+Run:
+
+```bash
+pnpm android:test:integration
+```
+
+Optional overrides:
+
+- `ANDROID_ASSISTANT_ANDROID_GATEWAY_URL=ws://...` (default: from your local AndroidAssistant config)
+- `ANDROID_ASSISTANT_ANDROID_GATEWAY_TOKEN=...`
+- `ANDROID_ASSISTANT_ANDROID_GATEWAY_PASSWORD=...`
+- `ANDROID_ASSISTANT_ANDROID_NODE_ID=...` or `ANDROID_ASSISTANT_ANDROID_NODE_NAME=...`
+
+What it does:
+
+- Reads `node.describe` command list from the selected Android node.
+- Invokes advertised non-interactive commands.
+- Skips `screen.record` in this suite (Android requires interactive per-invocation screen-capture consent).
+- Asserts command contracts (success or expected deterministic error for safe-invalid calls like `sms.send` and `notifications.actions`).
+
+Common failure quick-fixes:
+
+- `pairing required` before tests start:
+  - approve pending device pairing (`androidassistant devices approve --latest`) and rerun.
+- `A2UI host not reachable` / `A2UI_HOST_NOT_CONFIGURED`:
+  - ensure gateway canvas host is running and reachable, keep the app on the **Screen** tab. The app will auto-refresh canvas capability once; if it still fails, reconnect app and rerun.
+- `NODE_BACKGROUND_UNAVAILABLE: canvas unavailable`:
+  - app is not effectively ready for canvas commands; keep app foregrounded and **Screen** tab active.
+
+## Contributions
+
+This Android app is currently being rebuilt.
+Maintainer: @obviyus. For issues/questions/contributions, please open an issue or reach out on Discord.
+
