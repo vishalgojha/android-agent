@@ -1,6 +1,8 @@
 package ai.androidassistant.app.ui
 
 import android.annotation.SuppressLint
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.View
 import android.webkit.ConsoleMessage
@@ -16,6 +18,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
@@ -29,6 +34,8 @@ fun CanvasScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
   val context = LocalContext.current
   val isDebuggable = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
   val webViewRef = remember { mutableStateOf<WebView?>(null) }
+  val mainHandler = remember { Handler(Looper.getMainLooper()) }
+  var restartToken by remember { mutableStateOf(0) }
 
   DisposableEffect(viewModel) {
     onDispose {
@@ -41,93 +48,100 @@ fun CanvasScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     }
   }
 
-  AndroidView(
-    modifier = modifier,
-    factory = {
-      WebView(context).apply {
-        settings.javaScriptEnabled = true
-        settings.domStorageEnabled = true
-        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-        settings.useWideViewPort = false
-        settings.loadWithOverviewMode = false
-        settings.builtInZoomControls = false
-        settings.displayZoomControls = false
-        settings.setSupportZoom(false)
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
-          WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, false)
-        } else {
-          disableForceDarkIfSupported(settings)
-        }
-        if (isDebuggable) {
-          Log.d("AndroidAssistantWebView", "userAgent: ${settings.userAgentString}")
-        }
-        isScrollContainer = true
-        overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
-        isVerticalScrollBarEnabled = true
-        isHorizontalScrollBarEnabled = true
-        webViewClient =
-          object : WebViewClient() {
-            override fun onReceivedError(
-              view: WebView,
-              request: WebResourceRequest,
-              error: WebResourceError,
-            ) {
-              if (!isDebuggable || !request.isForMainFrame) return
-              Log.e("AndroidAssistantWebView", "onReceivedError: ${error.errorCode} ${error.description} ${request.url}")
-            }
-
-            override fun onReceivedHttpError(
-              view: WebView,
-              request: WebResourceRequest,
-              errorResponse: WebResourceResponse,
-            ) {
-              if (!isDebuggable || !request.isForMainFrame) return
-              Log.e(
-                "AndroidAssistantWebView",
-                "onReceivedHttpError: ${errorResponse.statusCode} ${errorResponse.reasonPhrase} ${request.url}",
-              )
-            }
-
-            override fun onPageFinished(view: WebView, url: String?) {
-              if (isDebuggable) {
-                Log.d("AndroidAssistantWebView", "onPageFinished: $url")
+  key(restartToken) {
+    AndroidView(
+      modifier = modifier,
+      factory = {
+        WebView(context).apply {
+          settings.javaScriptEnabled = true
+          settings.domStorageEnabled = true
+          settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+          settings.useWideViewPort = false
+          settings.loadWithOverviewMode = false
+          settings.builtInZoomControls = false
+          settings.displayZoomControls = false
+          settings.setSupportZoom(false)
+          if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+            WebSettingsCompat.setAlgorithmicDarkeningAllowed(settings, false)
+          } else {
+            disableForceDarkIfSupported(settings)
+          }
+          if (isDebuggable) {
+            Log.d("AndroidAssistantWebView", "userAgent: ${settings.userAgentString}")
+          }
+          isScrollContainer = true
+          overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+          isVerticalScrollBarEnabled = true
+          isHorizontalScrollBarEnabled = true
+          webViewClient =
+            object : WebViewClient() {
+              override fun onReceivedError(
+                view: WebView,
+                request: WebResourceRequest,
+                error: WebResourceError,
+              ) {
+                if (!isDebuggable || !request.isForMainFrame) return
+                Log.e("AndroidAssistantWebView", "onReceivedError: ${error.errorCode} ${error.description} ${request.url}")
               }
-              viewModel.canvas.onPageFinished()
-            }
 
-            override fun onRenderProcessGone(
-              view: WebView,
-              detail: android.webkit.RenderProcessGoneDetail,
-            ): Boolean {
-              if (isDebuggable) {
+              override fun onReceivedHttpError(
+                view: WebView,
+                request: WebResourceRequest,
+                errorResponse: WebResourceResponse,
+              ) {
+                if (!isDebuggable || !request.isForMainFrame) return
                 Log.e(
                   "AndroidAssistantWebView",
-                  "onRenderProcessGone didCrash=${detail.didCrash()} priorityAtExit=${detail.rendererPriorityAtExit()}",
+                  "onReceivedHttpError: ${errorResponse.statusCode} ${errorResponse.reasonPhrase} ${request.url}",
                 )
               }
-              return true
-            }
-          }
-        webChromeClient =
-          object : WebChromeClient() {
-            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
-              if (!isDebuggable) return false
-              val msg = consoleMessage ?: return false
-              Log.d(
-                "AndroidAssistantWebView",
-                "console ${msg.messageLevel()} @ ${msg.sourceId()}:${msg.lineNumber()} ${msg.message()}",
-              )
-              return false
-            }
-          }
 
-        val bridge = CanvasA2UIActionBridge { payload -> viewModel.handleCanvasA2UIActionFromWebView(payload) }
-        addJavascriptInterface(bridge, CanvasA2UIActionBridge.interfaceName)
-        viewModel.canvas.attach(this)
-        webViewRef.value = this
-      }
-    },
-  )
+              override fun onPageFinished(view: WebView, url: String?) {
+                if (isDebuggable) {
+                  Log.d("AndroidAssistantWebView", "onPageFinished: $url")
+                }
+                viewModel.canvas.onPageFinished()
+              }
+
+              override fun onRenderProcessGone(
+                view: WebView,
+                detail: android.webkit.RenderProcessGoneDetail,
+              ): Boolean {
+                if (isDebuggable) {
+                  Log.e(
+                    "AndroidAssistantWebView",
+                    "onRenderProcessGone didCrash=${detail.didCrash()} priorityAtExit=${detail.rendererPriorityAtExit()}",
+                  )
+                }
+                viewModel.canvas.detach(view)
+                view.removeJavascriptInterface(CanvasA2UIActionBridge.interfaceName)
+                view.destroy()
+                webViewRef.value = null
+                mainHandler.post { restartToken += 1 }
+                return true
+              }
+            }
+          webChromeClient =
+            object : WebChromeClient() {
+              override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                if (!isDebuggable) return false
+                val msg = consoleMessage ?: return false
+                Log.d(
+                  "AndroidAssistantWebView",
+                  "console ${msg.messageLevel()} @ ${msg.sourceId()}:${msg.lineNumber()} ${msg.message()}",
+                )
+                return false
+              }
+            }
+
+          val bridge = CanvasA2UIActionBridge { payload -> viewModel.handleCanvasA2UIActionFromWebView(payload) }
+          addJavascriptInterface(bridge, CanvasA2UIActionBridge.interfaceName)
+          viewModel.canvas.attach(this)
+          webViewRef.value = this
+        }
+      },
+    )
+  }
 }
 
 private fun disableForceDarkIfSupported(settings: WebSettings) {

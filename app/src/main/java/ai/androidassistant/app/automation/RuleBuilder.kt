@@ -160,7 +160,7 @@ fun createExampleRules(): List<AutomationRule> {
             .thenAnnounce("Message from your boss")
             .build(),
         
-        // Rule 5: Invoke AndroidAssistant command on notification
+        // Rule 5: Invoke PropAi Sync command on notification
         RuleBuilder()
             .named("Read WhatsApp Messages")
             .whenNotification("com.whatsapp", null, null)

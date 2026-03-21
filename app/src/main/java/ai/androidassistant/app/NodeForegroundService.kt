@@ -25,7 +25,7 @@ class NodeForegroundService : Service() {
   override fun onCreate() {
     super.onCreate()
     ensureChannel()
-    val initial = buildNotification(title = "AndroidAssistant Node", text = "Starting…")
+    val initial = buildNotification(title = "PropAi Sync Node", text = "Starting…")
     startForegroundWithTypes(notification = initial)
 
     val runtime = (application as NodeApp).runtime
@@ -40,7 +40,7 @@ class NodeForegroundService : Service() {
         ) { status, server, connected, micEnabled, micListening ->
           Quint(status, server, connected, micEnabled, micListening)
         }.collect { (status, server, connected, micEnabled, micListening) ->
-          val title = if (connected) "AndroidAssistant Node · Connected" else "AndroidAssistant Node"
+          val title = if (connected) "PropAi Sync Node · Connected" else "PropAi Sync Node"
           val micSuffix =
             if (micEnabled) {
               if (micListening) " · Mic: Listening" else " · Mic: Pending"
@@ -84,7 +84,7 @@ class NodeForegroundService : Service() {
         "Connection",
         NotificationManager.IMPORTANCE_LOW,
       ).apply {
-        description = "AndroidAssistant node connection status"
+        description = "PropAi Sync node connection status"
         setShowBadge(false)
       }
     mgr.createNotificationChannel(channel)

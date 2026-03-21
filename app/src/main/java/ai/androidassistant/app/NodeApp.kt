@@ -5,7 +5,6 @@ import android.os.StrictMode
 
 class NodeApp : Application() {
   val runtime: NodeRuntime by lazy { NodeRuntime(this) }
-  val agentRuntime: AgentRuntime by lazy { AgentRuntime(this) }
 
   override fun onCreate() {
     super.onCreate()

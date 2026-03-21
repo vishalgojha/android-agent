@@ -2,12 +2,16 @@ package ai.androidassistant.app
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import ai.androidassistant.app.gateway.GatewayEndpoint
 import ai.androidassistant.app.chat.OutgoingAttachment
 import ai.androidassistant.app.node.CameraCaptureManager
 import ai.androidassistant.app.node.CanvasController
 import ai.androidassistant.app.node.SmsManager
+import ai.androidassistant.app.propai.PropAiLicenseStatus
 import ai.androidassistant.app.voice.VoiceConversationEntry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -39,6 +43,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
   val instanceId: StateFlow<String> = runtime.instanceId
   val displayName: StateFlow<String> = runtime.displayName
+  val wakeWords: StateFlow<List<String>> = runtime.wakeWords
   val cameraEnabled: StateFlow<Boolean> = runtime.cameraEnabled
   val locationMode: StateFlow<LocationMode> = runtime.locationMode
   val locationPreciseEnabled: StateFlow<Boolean> = runtime.locationPreciseEnabled
@@ -59,9 +64,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
   val manualHost: StateFlow<String> = runtime.manualHost
   val manualPort: StateFlow<Int> = runtime.manualPort
   val manualTls: StateFlow<Boolean> = runtime.manualTls
+  val chatListeningPackages: StateFlow<List<String>> = runtime.chatListeningPackages
+  val chatListeningConversationFilters: StateFlow<List<String>> = runtime.chatListeningConversationFilters
   val gatewayToken: StateFlow<String> = runtime.gatewayToken
   val onboardingCompleted: StateFlow<Boolean> = runtime.onboardingCompleted
+  val welcomeMessageSent: StateFlow<Boolean> = runtime.welcomeMessageSent
   val canvasDebugStatusEnabled: StateFlow<Boolean> = runtime.canvasDebugStatusEnabled
+  val llmMode: StateFlow<LlmMode> = runtime.llmMode
+  val cloudProvider: StateFlow<CloudProvider> = runtime.cloudProvider
+  val openAiApiKey: StateFlow<String> = runtime.openAiApiKey
+  val anthropicApiKey: StateFlow<String> = runtime.anthropicApiKey
+  val groqApiKey: StateFlow<String> = runtime.groqApiKey
+  val openRouterApiKey: StateFlow<String> = runtime.openRouterApiKey
+  val elevenLabsAgentId: StateFlow<String> = runtime.elevenLabsAgentId
+  val openAiModel: StateFlow<String> = runtime.openAiModel
+  val anthropicModel: StateFlow<String> = runtime.anthropicModel
+  val groqModel: StateFlow<String> = runtime.groqModel
+  val openRouterModel: StateFlow<String> = runtime.openRouterModel
+  val elevenLabsModel: StateFlow<String> = runtime.elevenLabsModel
+  val propAiControlBaseUrl: StateFlow<String> = runtime.propAiControlBaseUrl
+  val propAiControlEmail: StateFlow<String> = runtime.propAiControlEmail
+  val propAiControlUserId: StateFlow<String> = runtime.propAiControlUserId
+  val propAiControlTenantId: StateFlow<String> = runtime.propAiControlTenantId
+  val propAiControlTenantName: StateFlow<String> = runtime.propAiControlTenantName
+  val propAiControlTenantRole: StateFlow<String> = runtime.propAiControlTenantRole
+  val propAiLicenseBaseUrl: StateFlow<String> = runtime.propAiLicenseBaseUrl
+  val propAiActivationKey: StateFlow<String> = runtime.propAiActivationKey
+  val propAiActivationToken: StateFlow<String> = runtime.propAiActivationToken
+  val propAiLicenseStatus: StateFlow<PropAiLicenseStatus> = runtime.propAiLicenseStatus
+  val propAiControlBusy: StateFlow<Boolean> = runtime.propAiControlBusy
+  val propAiControlError: StateFlow<String?> = runtime.propAiControlError
+  val propAiLicenseBusy: StateFlow<Boolean> = runtime.propAiLicenseBusy
+  val propAiLicenseError: StateFlow<String?> = runtime.propAiLicenseError
 
   val chatSessionKey: StateFlow<String> = runtime.chatSessionKey
   val chatSessionId: StateFlow<String?> = runtime.chatSessionId
@@ -80,6 +114,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
   fun setDisplayName(value: String) {
     runtime.setDisplayName(value)
+  }
+
+  fun setWakeWords(words: List<String>) {
+    runtime.setWakeWords(words)
   }
 
   fun setCameraEnabled(value: Boolean) {
@@ -114,6 +152,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     runtime.setManualTls(value)
   }
 
+  fun setChatListeningPackages(values: List<String>) {
+    runtime.setChatListeningPackages(values)
+  }
+
+  fun setChatListeningConversationFilters(values: List<String>) {
+    runtime.setChatListeningConversationFilters(values)
+  }
+
   fun setGatewayToken(value: String) {
     runtime.setGatewayToken(value)
   }
@@ -124,6 +170,98 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
   fun setOnboardingCompleted(value: Boolean) {
     runtime.setOnboardingCompleted(value)
+  }
+
+  fun showWelcomeMessageIfNeeded() {
+    runtime.showWelcomeMessageIfNeeded()
+  }
+
+  fun setLlmMode(mode: LlmMode) {
+    runtime.setLlmMode(mode)
+  }
+
+  fun setCloudProvider(provider: CloudProvider) {
+    runtime.setCloudProvider(provider)
+  }
+
+  fun setOpenAiApiKey(value: String) {
+    runtime.setOpenAiApiKey(value)
+  }
+
+  fun setAnthropicApiKey(value: String) {
+    runtime.setAnthropicApiKey(value)
+  }
+
+  fun setGroqApiKey(value: String) {
+    runtime.setGroqApiKey(value)
+  }
+
+  fun setOpenRouterApiKey(value: String) {
+    runtime.setOpenRouterApiKey(value)
+  }
+
+  fun setElevenLabsAgentId(value: String) {
+    runtime.setElevenLabsAgentId(value)
+  }
+
+  fun setOpenAiModel(value: String) {
+    runtime.setOpenAiModel(value)
+  }
+
+  fun setAnthropicModel(value: String) {
+    runtime.setAnthropicModel(value)
+  }
+
+  fun setGroqModel(value: String) {
+    runtime.setGroqModel(value)
+  }
+
+  fun setOpenRouterModel(value: String) {
+    runtime.setOpenRouterModel(value)
+  }
+
+  fun setElevenLabsModel(value: String) {
+    runtime.setElevenLabsModel(value)
+  }
+
+  fun setPropAiControlBaseUrl(value: String) {
+    runtime.setPropAiControlBaseUrl(value)
+  }
+
+  fun setPropAiLicenseBaseUrl(value: String) {
+    runtime.setPropAiLicenseBaseUrl(value)
+  }
+
+  fun setPropAiActivationKey(value: String) {
+    runtime.setPropAiActivationKey(value)
+  }
+
+  fun loginPropAi(email: String, password: String) {
+    runtime.loginPropAi(email, password)
+  }
+
+  fun registerPropAi(email: String, password: String, tenantName: String) {
+    runtime.registerPropAi(email, password, tenantName)
+  }
+
+  fun refreshPropAiProfile() {
+    runtime.refreshPropAiProfile()
+  }
+
+  fun logoutPropAi() {
+    runtime.logoutPropAi()
+  }
+
+  fun activatePropAiLicense() {
+    runtime.activatePropAiLicense()
+  }
+
+  fun refreshPropAiLicense() {
+    runtime.refreshPropAiLicense()
+  }
+
+  fun clearPropAiLicense() {
+    runtime.clearPropAiLicense()
   }
 
   fun setCanvasDebugStatusEnabled(value: Boolean) {
@@ -207,7 +345,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
   }
 
   fun sendChat(message: String, thinking: String, attachments: List<OutgoingAttachment>) {
-    runtime.sendChat(message = message, thinking = thinking, attachments = attachments)
+    viewModelScope.launch(Dispatchers.Default) {
+      runtime.sendChat(message = message, thinking = thinking, attachments = attachments)
+    }
   }
 }
 

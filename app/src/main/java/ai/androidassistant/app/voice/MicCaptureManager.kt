@@ -45,8 +45,10 @@ class MicCaptureManager(
    * round-trip so [pendingRunId] is set before any chat events can arrive.
    */
   private val sendToGateway: suspend (message: String, onRunIdKnown: (String) -> Unit) -> String?,
+  private val localMode: Boolean = false,
+  private val localResponder: (suspend (String) -> String)? = null,
   private val speakAssistantReply: suspend (String) -> Unit = {},
-) {
+) : VoiceSession {
   companion object {
     private const val tag = "MicCapture"
     private const val speechMinSessionMs = 30_000L
@@ -60,38 +62,38 @@ class MicCaptureManager(
   private val json = Json { ignoreUnknownKeys = true }
 
   private val _micEnabled = MutableStateFlow(false)
-  val micEnabled: StateFlow<Boolean> = _micEnabled
+  override val micEnabled: StateFlow<Boolean> = _micEnabled
 
   private val _micCooldown = MutableStateFlow(false)
-  val micCooldown: StateFlow<Boolean> = _micCooldown
+  override val micCooldown: StateFlow<Boolean> = _micCooldown
 
   private val _isListening = MutableStateFlow(false)
-  val isListening: StateFlow<Boolean> = _isListening
+  override val isListening: StateFlow<Boolean> = _isListening
 
   private val _statusText = MutableStateFlow("Mic off")
-  val statusText: StateFlow<String> = _statusText
+  override val statusText: StateFlow<String> = _statusText
 
   private val _liveTranscript = MutableStateFlow<String?>(null)
-  val liveTranscript: StateFlow<String?> = _liveTranscript
+  override val liveTranscript: StateFlow<String?> = _liveTranscript
 
   private val _queuedMessages = MutableStateFlow<List<String>>(emptyList())
-  val queuedMessages: StateFlow<List<String>> = _queuedMessages
+  override val queuedMessages: StateFlow<List<String>> = _queuedMessages
 
   private val _conversation = MutableStateFlow<List<VoiceConversationEntry>>(emptyList())
-  val conversation: StateFlow<List<VoiceConversationEntry>> = _conversation
+  override val conversation: StateFlow<List<VoiceConversationEntry>> = _conversation
 
   private val _inputLevel = MutableStateFlow(0f)
-  val inputLevel: StateFlow<Float> = _inputLevel
+  override val inputLevel: StateFlow<Float> = _inputLevel
 
   private val _isSending = MutableStateFlow(false)
-  val isSending: StateFlow<Boolean> = _isSending
+  override val isSending: StateFlow<Boolean> = _isSending
 
   private val messageQueue = ArrayDeque<String>()
   private val sessionSegments = mutableListOf<String>()
   private var lastFinalSegment: String? = null
   private var pendingRunId: String? = null
   private var pendingAssistantEntryId: String? = null
-  private var gatewayConnected = false
+  private var gatewayConnected = localMode
 
   private var recognizer: SpeechRecognizer? = null
   private var restartJob: Job? = null
@@ -99,7 +101,7 @@ class MicCaptureManager(
   private var pendingRunTimeoutJob: Job? = null
   private var stopRequested = false
 
-  fun setMicEnabled(enabled: Boolean) {
+  override fun setMicEnabled(enabled: Boolean) {
     if (_micEnabled.value == enabled) return
     _micEnabled.value = enabled
     if (enabled) {
@@ -126,7 +128,8 @@ class MicCaptureManager(
     }
   }
 
-  fun onGatewayConnectionChanged(connected: Boolean) {
+  override fun onGatewayConnectionChanged(connected: Boolean) {
+    if (localMode) return
     gatewayConnected = connected
     if (connected) {
       sendQueuedIfIdle()
@@ -137,7 +140,8 @@ class MicCaptureManager(
     }
   }
 
-  fun handleGatewayEvent(event: String, payloadJson: String?) {
+  override fun handleGatewayEvent(event: String, payloadJson: String?) {
+    if (localMode) return
     if (event != "chat") return
     if (payloadJson.isNullOrBlank()) return
     val payload =
@@ -296,6 +300,36 @@ class MicCaptureManager(
       }
       return
     }
+    if (localMode) {
+      val responder = localResponder
+      if (responder == null) {
+        _statusText.value = "Local model unavailable"
+        return
+      }
+
+      val next = messageQueue.first()
+      _isSending.value = true
+      pendingRunTimeoutJob?.cancel()
+      pendingRunTimeoutJob = null
+      _statusText.value = if (_micEnabled.value) "Listening · sending to local model" else "Sending to local model"
+
+      scope.launch {
+        try {
+          val reply = responder(next)
+          if (reply.isNotBlank()) {
+            upsertPendingAssistant(text = reply.trim(), isStreaming = false)
+            playAssistantReplyAsync(reply)
+          } else {
+            upsertPendingAssistant(text = "No response available yet.", isStreaming = false)
+          }
+        } catch (_: Throwable) {
+          upsertPendingAssistant(text = "Voice response failed.", isStreaming = false)
+        }
+        completePendingTurn()
+      }
+      return
+    }
+
     if (!gatewayConnected) {
       _statusText.value = queuedWaitingStatus()
       return
@@ -376,7 +410,11 @@ class MicCaptureManager(
   }
 
   private fun queuedWaitingStatus(): String {
-    return "${messageQueue.size} queued · waiting for gateway"
+    return if (localMode) {
+      "${messageQueue.size} queued · waiting for local model"
+    } else {
+      "${messageQueue.size} queued · waiting for gateway"
+    }
   }
 
   private fun appendConversation(

@@ -1,6 +1,8 @@
 package ai.androidassistant.app.ui
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -9,10 +11,12 @@ import android.hardware.SensorManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.view.accessibility.AccessibilityManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,10 +46,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -57,8 +62,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -75,6 +83,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -84,18 +94,18 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import ai.androidassistant.app.LocationMode
+import ai.androidassistant.app.CloudProvider
 import ai.androidassistant.app.MainViewModel
 import ai.androidassistant.app.R
+import ai.androidassistant.app.automation.AutomationAccessibilityService
 import ai.androidassistant.app.gateway.GatewayEndpoint
 import ai.androidassistant.app.node.DeviceNotificationListenerService
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
+import ai.androidassistant.app.propai.PropAiLicenseStatus
 
 private enum class OnboardingStep(val index: Int, val label: String) {
   Welcome(1, "Welcome"),
-  Gateway(2, "Gateway"),
-  Permissions(3, "Permissions"),
-  FinalCheck(4, "Connect"),
+  Permissions(2, "Permissions"),
+  FinalCheck(3, "Finish"),
 }
 
 private enum class GatewayInputMode {
@@ -104,7 +114,6 @@ private enum class GatewayInputMode {
 }
 
 private enum class PermissionToggle {
-  Discovery,
   Location,
   Notifications,
   Microphone,
@@ -118,28 +127,31 @@ private enum class PermissionToggle {
 
 private enum class SpecialAccessToggle {
   NotificationListener,
+  Accessibility,
+  Overlay,
 }
 
 private val onboardingBackgroundGradient =
   listOf(
-    Color(0xFFFFFFFF),
-    Color(0xFFF7F8FA),
-    Color(0xFFEFF1F5),
+    Color(0xFF030305),
+    Color(0xFF06070A),
+    Color(0xFF0A0E14),
+    Color(0xFF0F151E),
   )
-private val onboardingSurface = Color(0xFFF6F7FA)
-private val onboardingBorder = Color(0xFFE5E7EC)
-private val onboardingBorderStrong = Color(0xFFD6DAE2)
-private val onboardingText = Color(0xFF17181C)
-private val onboardingTextSecondary = Color(0xFF4D5563)
-private val onboardingTextTertiary = Color(0xFF8A92A2)
-private val onboardingAccent = Color(0xFF1D5DD8)
-private val onboardingAccentSoft = Color(0xFFECF3FF)
-private val onboardingSuccess = Color(0xFF2F8C5A)
-private val onboardingWarning = Color(0xFFC8841A)
-private val onboardingCommandBg = Color(0xFF15171B)
-private val onboardingCommandBorder = Color(0xFF2B2E35)
-private val onboardingCommandAccent = Color(0xFF3FC97A)
-private val onboardingCommandText = Color(0xFFE8EAEE)
+private val onboardingSurface = Color(0xB30C1016)
+private val onboardingBorder = Color(0x332A3A52)
+private val onboardingBorderStrong = Color(0x66556B8A)
+private val onboardingText = Color(0xFFF4F6FA)
+private val onboardingTextSecondary = Color(0xFFB9C1D3)
+private val onboardingTextTertiary = Color(0xFF788297)
+private val onboardingAccent = Color(0xFF7AD9FF)
+private val onboardingAccentSoft = Color(0x332B5166)
+private val onboardingSuccess = Color(0xFF6ED4A7)
+private val onboardingWarning = Color(0xFFF3BF6A)
+private val onboardingCommandBg = Color(0xE0080B12)
+private val onboardingCommandBorder = Color(0xFF202838)
+private val onboardingCommandAccent = Color(0xFF6ED4A7)
+private val onboardingCommandText = Color(0xFFE7ECF7)
 
 private val onboardingFontFamily =
   FontFamily(
@@ -213,26 +225,33 @@ private val onboardingCaption2Style =
 @Composable
 fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
   val context = androidx.compose.ui.platform.LocalContext.current
-  val gateways by viewModel.gateways.collectAsState()
-  val discoveryStatusText by viewModel.discoveryStatusText.collectAsState()
-  val statusText by viewModel.statusText.collectAsState()
-  val isConnected by viewModel.isConnected.collectAsState()
-  val serverName by viewModel.serverName.collectAsState()
-  val remoteAddress by viewModel.remoteAddress.collectAsState()
-  val persistedGatewayToken by viewModel.gatewayToken.collectAsState()
-  val pendingTrust by viewModel.pendingGatewayTrust.collectAsState()
+  val cloudProvider by viewModel.cloudProvider.collectAsState()
+  val openAiApiKey by viewModel.openAiApiKey.collectAsState()
+  val anthropicApiKey by viewModel.anthropicApiKey.collectAsState()
+  val groqApiKey by viewModel.groqApiKey.collectAsState()
+  val openRouterApiKey by viewModel.openRouterApiKey.collectAsState()
+  val openAiModel by viewModel.openAiModel.collectAsState()
+  val anthropicModel by viewModel.anthropicModel.collectAsState()
+  val groqModel by viewModel.groqModel.collectAsState()
+  val openRouterModel by viewModel.openRouterModel.collectAsState()
+  val elevenLabsModel by viewModel.elevenLabsModel.collectAsState()
+  val elevenLabsApiKey by viewModel.elevenLabsApiKey.collectAsState()
+  val elevenLabsAgentId by viewModel.elevenLabsAgentId.collectAsState()
+  val propAiControlBaseUrl by viewModel.propAiControlBaseUrl.collectAsState()
+  val propAiControlEmail by viewModel.propAiControlEmail.collectAsState()
+  val propAiControlUserId by viewModel.propAiControlUserId.collectAsState()
+  val propAiControlTenantName by viewModel.propAiControlTenantName.collectAsState()
+  val propAiControlTenantRole by viewModel.propAiControlTenantRole.collectAsState()
+  val propAiLicenseBaseUrl by viewModel.propAiLicenseBaseUrl.collectAsState()
+  val propAiActivationKey by viewModel.propAiActivationKey.collectAsState()
+  val propAiActivationToken by viewModel.propAiActivationToken.collectAsState()
+  val propAiLicenseStatus by viewModel.propAiLicenseStatus.collectAsState()
+  val propAiControlBusy by viewModel.propAiControlBusy.collectAsState()
+  val propAiControlError by viewModel.propAiControlError.collectAsState()
+  val propAiLicenseBusy by viewModel.propAiLicenseBusy.collectAsState()
+  val propAiLicenseError by viewModel.propAiLicenseError.collectAsState()
 
   var step by rememberSaveable { mutableStateOf(OnboardingStep.Welcome) }
-  var setupCode by rememberSaveable { mutableStateOf("") }
-  var gatewayUrl by rememberSaveable { mutableStateOf("") }
-  var gatewayPassword by rememberSaveable { mutableStateOf("") }
-  var gatewayInputMode by rememberSaveable { mutableStateOf(GatewayInputMode.SetupCode) }
-  var gatewayAdvancedOpen by rememberSaveable { mutableStateOf(false) }
-  var manualHost by rememberSaveable { mutableStateOf("10.0.2.2") }
-  var manualPort by rememberSaveable { mutableStateOf("18789") }
-  var manualTls by rememberSaveable { mutableStateOf(false) }
-  var gatewayError by rememberSaveable { mutableStateOf<String?>(null) }
-  var attemptedConnect by rememberSaveable { mutableStateOf(false) }
 
   val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -246,12 +265,6 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     }
   val motionPermissionRequired = true
   val notificationsPermissionRequired = Build.VERSION.SDK_INT >= 33
-  val discoveryPermission =
-    if (Build.VERSION.SDK_INT >= 33) {
-      Manifest.permission.NEARBY_WIFI_DEVICES
-    } else {
-      Manifest.permission.ACCESS_FINE_LOCATION
-    }
   val photosPermission =
     if (Build.VERSION.SDK_INT >= 33) {
       Manifest.permission.READ_MEDIA_IMAGES
@@ -259,10 +272,6 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
       Manifest.permission.READ_EXTERNAL_STORAGE
     }
 
-  var enableDiscovery by
-    rememberSaveable {
-      mutableStateOf(isPermissionGranted(context, discoveryPermission))
-    }
   var enableLocation by rememberSaveable { mutableStateOf(false) }
   var enableNotifications by
     rememberSaveable {
@@ -274,6 +283,14 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
   var enableNotificationListener by
     rememberSaveable {
       mutableStateOf(isNotificationListenerEnabled(context))
+    }
+  var enableAccessibility by
+    rememberSaveable {
+      mutableStateOf(isAccessibilityServiceEnabled(context))
+    }
+  var enableOverlay by
+    rememberSaveable {
+      mutableStateOf(hasOverlayPermission(context))
     }
   var enableMicrophone by rememberSaveable { mutableStateOf(false) }
   var enableCamera by rememberSaveable { mutableStateOf(false) }
@@ -297,7 +314,6 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 
   fun setPermissionToggleEnabled(toggle: PermissionToggle, enabled: Boolean) {
     when (toggle) {
-      PermissionToggle.Discovery -> enableDiscovery = enabled
       PermissionToggle.Location -> enableLocation = enabled
       PermissionToggle.Notifications -> enableNotifications = enabled
       PermissionToggle.Microphone -> enableMicrophone = enabled
@@ -312,7 +328,6 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 
   fun isPermissionToggleGranted(toggle: PermissionToggle): Boolean =
     when (toggle) {
-      PermissionToggle.Discovery -> isPermissionGranted(context, discoveryPermission)
       PermissionToggle.Location ->
         isPermissionGranted(context, Manifest.permission.ACCESS_FINE_LOCATION) ||
           isPermissionGranted(context, Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -339,15 +354,18 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
   fun setSpecialAccessToggleEnabled(toggle: SpecialAccessToggle, enabled: Boolean) {
     when (toggle) {
       SpecialAccessToggle.NotificationListener -> enableNotificationListener = enabled
+      SpecialAccessToggle.Accessibility -> enableAccessibility = enabled
+      SpecialAccessToggle.Overlay -> enableOverlay = enabled
     }
   }
 
   val enabledPermissionSummary =
     remember(
-      enableDiscovery,
       enableLocation,
       enableNotifications,
       enableNotificationListener,
+      enableAccessibility,
+      enableOverlay,
       enableMicrophone,
       enableCamera,
       enablePhotos,
@@ -359,10 +377,11 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
       motionAvailable,
     ) {
       val enabled = mutableListOf<String>()
-      if (enableDiscovery) enabled += "Gateway discovery"
       if (enableLocation) enabled += "Location"
       if (enableNotifications) enabled += "Notifications"
       if (enableNotificationListener) enabled += "Notification listener"
+      if (enableAccessibility) enabled += "Accessibility service"
+      if (enableOverlay) enabled += "Display over other apps"
       if (enableMicrophone) enabled += "Microphone"
       if (enableCamera) enabled += "Camera"
       if (enablePhotos) enabled += "Photos"
@@ -377,6 +396,14 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     var openedSpecialSetup = false
     if (enableNotificationListener && !isNotificationListenerEnabled(context)) {
       openNotificationListenerSettings(context)
+      openedSpecialSetup = true
+    }
+    if (enableAccessibility && !isAccessibilityServiceEnabled(context)) {
+      openAccessibilitySettings(context)
+      openedSpecialSetup = true
+    }
+    if (enableOverlay && !hasOverlayPermission(context)) {
+      openOverlaySettings(context)
       openedSpecialSetup = true
     }
     if (openedSpecialSetup) {
@@ -421,6 +448,8 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
       val grantedNow =
         when (toggle) {
           SpecialAccessToggle.NotificationListener -> isNotificationListenerEnabled(context)
+          SpecialAccessToggle.Accessibility -> isAccessibilityServiceEnabled(context)
+          SpecialAccessToggle.Overlay -> hasOverlayPermission(context)
         }
       if (grantedNow) {
         setSpecialAccessToggleEnabled(toggle, true)
@@ -430,6 +459,8 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
       pendingSpecialAccessToggle = toggle
       when (toggle) {
         SpecialAccessToggle.NotificationListener -> openNotificationListenerSettings(context)
+        SpecialAccessToggle.Accessibility -> openAccessibilitySettings(context)
+        SpecialAccessToggle.Overlay -> openOverlaySettings(context)
       }
     }
 
@@ -447,51 +478,25 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             )
             pendingSpecialAccessToggle = null
           }
+          SpecialAccessToggle.Accessibility -> {
+            setSpecialAccessToggleEnabled(
+              SpecialAccessToggle.Accessibility,
+              isAccessibilityServiceEnabled(context),
+            )
+            pendingSpecialAccessToggle = null
+          }
+          SpecialAccessToggle.Overlay -> {
+            setSpecialAccessToggleEnabled(
+              SpecialAccessToggle.Overlay,
+              hasOverlayPermission(context),
+            )
+            pendingSpecialAccessToggle = null
+          }
           null -> Unit
         }
       }
     lifecycleOwner.lifecycle.addObserver(observer)
     onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-  }
-
-  val qrScanLauncher =
-    rememberLauncherForActivityResult(ScanContract()) { result ->
-      val contents = result.contents?.trim().orEmpty()
-      if (contents.isEmpty()) {
-        return@rememberLauncherForActivityResult
-      }
-      val scannedSetupCode = resolveScannedSetupCode(contents)
-      if (scannedSetupCode == null) {
-        gatewayError = "QR code did not contain a valid setup code."
-        return@rememberLauncherForActivityResult
-      }
-      setupCode = scannedSetupCode
-      gatewayInputMode = GatewayInputMode.SetupCode
-      gatewayError = null
-      attemptedConnect = false
-    }
-
-  if (pendingTrust != null) {
-    val prompt = pendingTrust!!
-    AlertDialog(
-      onDismissRequest = { viewModel.declineGatewayTrustPrompt() },
-      title = { Text("Trust this gateway?") },
-      text = {
-        Text(
-          "First-time TLS connection.\n\nVerify this SHA-256 fingerprint before trusting:\n${prompt.fingerprintSha256}",
-        )
-      },
-      confirmButton = {
-        TextButton(onClick = { viewModel.acceptGatewayTrustPrompt() }) {
-          Text("Trust and continue")
-        }
-      },
-      dismissButton = {
-        TextButton(onClick = { viewModel.declineGatewayTrustPrompt() }) {
-          Text("Cancel")
-        }
-      },
-    )
   }
 
   Box(
@@ -524,12 +529,12 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             color = onboardingAccent,
           )
           Text(
-            "AndroidAssistant\nMobile Setup",
+            "PropAi Sync\nMobile Setup",
             style = onboardingDisplayStyle.copy(lineHeight = 38.sp),
             color = onboardingText,
           )
           Text(
-            "Step ${step.index} of 4",
+            "Step ${step.index} of ${OnboardingStep.entries.size}",
             style = onboardingCaption1Style,
             color = onboardingAccent,
           )
@@ -538,71 +543,13 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 
         when (step) {
           OnboardingStep.Welcome -> WelcomeStep()
-          OnboardingStep.Gateway ->
-            GatewayStep(
-              inputMode = gatewayInputMode,
-              advancedOpen = gatewayAdvancedOpen,
-              setupCode = setupCode,
-              gateways = gateways,
-              discoveryStatusText = discoveryStatusText,
-              discoveryEnabled = enableDiscovery,
-              manualHost = manualHost,
-              manualPort = manualPort,
-              manualTls = manualTls,
-              gatewayToken = persistedGatewayToken,
-              gatewayPassword = gatewayPassword,
-              gatewayError = gatewayError,
-              onScanQrClick = {
-                gatewayError = null
-                qrScanLauncher.launch(
-                  ScanOptions().apply {
-                    setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                    setPrompt("Scan AndroidAssistant onboarding QR")
-                    setBeepEnabled(false)
-                    setOrientationLocked(false)
-                  },
-                )
-              },
-              onAdvancedOpenChange = { gatewayAdvancedOpen = it },
-              onInputModeChange = {
-                gatewayInputMode = it
-                gatewayError = null
-              },
-              onSetupCodeChange = {
-                setupCode = it
-                gatewayError = null
-              },
-              onManualHostChange = {
-                manualHost = it
-                gatewayError = null
-              },
-              onManualPortChange = {
-                manualPort = it
-                gatewayError = null
-              },
-              onManualTlsChange = {
-                manualTls = it
-                gatewayError = null
-              },
-              onDiscoveredGatewaySelect = { endpoint ->
-                gatewayInputMode = GatewayInputMode.Manual
-                manualHost = endpointPreferredHost(endpoint)
-                manualPort = endpointPreferredPort(endpoint).toString()
-                manualTls = endpoint.tlsEnabled
-                gatewayError = null
-              },
-              onTokenChange = viewModel::setGatewayToken,
-              onPasswordChange = {
-                gatewayPassword = it
-                gatewayError = null
-              },
-            )
           OnboardingStep.Permissions ->
             PermissionsStep(
-              enableDiscovery = enableDiscovery,
               enableLocation = enableLocation,
               enableNotifications = enableNotifications,
               enableNotificationListener = enableNotificationListener,
+              enableAccessibility = enableAccessibility,
+              enableOverlay = enableOverlay,
               enableMicrophone = enableMicrophone,
               enableCamera = enableCamera,
               enablePhotos = enablePhotos,
@@ -614,13 +561,6 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
               enableSms = enableSms,
               smsAvailable = smsAvailable,
               context = context,
-              onDiscoveryChange = { checked ->
-                requestPermissionToggle(
-                  PermissionToggle.Discovery,
-                  checked,
-                  listOf(discoveryPermission),
-                )
-              },
               onLocationChange = { checked ->
                 requestPermissionToggle(
                   PermissionToggle.Location,
@@ -644,6 +584,12 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
               },
               onNotificationListenerChange = { checked ->
                 requestSpecialAccessToggle(SpecialAccessToggle.NotificationListener, checked)
+              },
+              onAccessibilityChange = { checked ->
+                requestSpecialAccessToggle(SpecialAccessToggle.Accessibility, checked)
+              },
+              onOverlayChange = { checked ->
+                requestSpecialAccessToggle(SpecialAccessToggle.Overlay, checked)
               },
               onMicrophoneChange = { checked ->
                 requestPermissionToggle(
@@ -713,14 +659,54 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             )
           OnboardingStep.FinalCheck ->
             FinalStep(
-              parsedGateway = parseGatewayEndpoint(gatewayUrl),
-              statusText = statusText,
-              isConnected = isConnected,
-              serverName = serverName,
-              remoteAddress = remoteAddress,
-              attemptedConnect = attemptedConnect,
               enabledPermissions = enabledPermissionSummary,
-              methodLabel = if (gatewayInputMode == GatewayInputMode.SetupCode) "QR / Setup Code" else "Manual",
+              cloudProvider = cloudProvider,
+              openAiApiKey = openAiApiKey,
+              anthropicApiKey = anthropicApiKey,
+              groqApiKey = groqApiKey,
+              openRouterApiKey = openRouterApiKey,
+              openAiModel = openAiModel,
+              anthropicModel = anthropicModel,
+              groqModel = groqModel,
+              openRouterModel = openRouterModel,
+              elevenLabsModel = elevenLabsModel,
+              elevenLabsApiKey = elevenLabsApiKey,
+              elevenLabsAgentId = elevenLabsAgentId,
+              propAiControlBaseUrl = propAiControlBaseUrl,
+              propAiControlEmail = propAiControlEmail,
+              propAiControlUserId = propAiControlUserId,
+              propAiControlTenantName = propAiControlTenantName,
+              propAiControlTenantRole = propAiControlTenantRole,
+              propAiControlBusy = propAiControlBusy,
+              propAiControlError = propAiControlError,
+              propAiLicenseBaseUrl = propAiLicenseBaseUrl,
+              propAiActivationKey = propAiActivationKey,
+              propAiActivationToken = propAiActivationToken,
+              propAiLicenseStatus = propAiLicenseStatus,
+              propAiLicenseBusy = propAiLicenseBusy,
+              propAiLicenseError = propAiLicenseError,
+              onProviderChange = viewModel::setCloudProvider,
+              onOpenAiApiKeyChange = viewModel::setOpenAiApiKey,
+              onAnthropicApiKeyChange = viewModel::setAnthropicApiKey,
+              onGroqApiKeyChange = viewModel::setGroqApiKey,
+              onOpenRouterApiKeyChange = viewModel::setOpenRouterApiKey,
+              onElevenLabsApiKeyChange = viewModel::setElevenLabsApiKey,
+              onOpenAiModelChange = viewModel::setOpenAiModel,
+              onAnthropicModelChange = viewModel::setAnthropicModel,
+              onGroqModelChange = viewModel::setGroqModel,
+              onOpenRouterModelChange = viewModel::setOpenRouterModel,
+              onElevenLabsModelChange = viewModel::setElevenLabsModel,
+              onElevenLabsAgentIdChange = viewModel::setElevenLabsAgentId,
+              onPropAiControlBaseUrlChange = viewModel::setPropAiControlBaseUrl,
+              onPropAiLicenseBaseUrlChange = viewModel::setPropAiLicenseBaseUrl,
+              onPropAiActivationKeyChange = viewModel::setPropAiActivationKey,
+              onPropAiLogin = viewModel::loginPropAi,
+              onPropAiRegister = viewModel::registerPropAi,
+              onPropAiRefreshProfile = viewModel::refreshPropAiProfile,
+              onPropAiLogout = viewModel::logoutPropAi,
+              onPropAiActivateLicense = viewModel::activatePropAiLicense,
+              onPropAiRefreshLicense = viewModel::refreshPropAiLicense,
+              onPropAiClearLicense = viewModel::clearPropAiLicense,
             )
         }
       }
@@ -744,8 +730,7 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
               step =
                 when (step) {
                   OnboardingStep.Welcome -> OnboardingStep.Welcome
-                  OnboardingStep.Gateway -> OnboardingStep.Welcome
-                  OnboardingStep.Permissions -> OnboardingStep.Gateway
+                  OnboardingStep.Permissions -> OnboardingStep.Welcome
                   OnboardingStep.FinalCheck -> OnboardingStep.Permissions
                 }
             },
@@ -762,48 +747,7 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         when (step) {
           OnboardingStep.Welcome -> {
             Button(
-              onClick = { step = OnboardingStep.Gateway },
-              modifier = Modifier.weight(1f).height(52.dp),
-              shape = RoundedCornerShape(14.dp),
-              colors =
-                ButtonDefaults.buttonColors(
-                  containerColor = onboardingAccent,
-                  contentColor = Color.White,
-                  disabledContainerColor = onboardingAccent.copy(alpha = 0.45f),
-                  disabledContentColor = Color.White,
-                ),
-            ) {
-              Text("Next", style = onboardingHeadlineStyle.copy(fontWeight = FontWeight.Bold))
-            }
-          }
-          OnboardingStep.Gateway -> {
-            Button(
-              onClick = {
-                if (gatewayInputMode == GatewayInputMode.SetupCode) {
-                  val parsedSetup = decodeGatewaySetupCode(setupCode)
-                  if (parsedSetup == null) {
-                    gatewayError = "Scan QR code first, or use Advanced setup."
-                    return@Button
-                  }
-                  val parsedGateway = parseGatewayEndpoint(parsedSetup.url)
-                  if (parsedGateway == null) {
-                    gatewayError = "Setup code has invalid gateway URL."
-                    return@Button
-                  }
-                  gatewayUrl = parsedSetup.url
-                  parsedSetup.token?.let { viewModel.setGatewayToken(it) }
-                  gatewayPassword = parsedSetup.password.orEmpty()
-                } else {
-                  val manualUrl = composeGatewayManualUrl(manualHost, manualPort, manualTls)
-                  val parsedGateway = manualUrl?.let(::parseGatewayEndpoint)
-                  if (parsedGateway == null) {
-                    gatewayError = "Manual endpoint is invalid."
-                    return@Button
-                  }
-                  gatewayUrl = parsedGateway.displayUrl
-                }
-                step = OnboardingStep.Permissions
-              },
+              onClick = { step = OnboardingStep.Permissions },
               modifier = Modifier.weight(1f).height(52.dp),
               shape = RoundedCornerShape(14.dp),
               colors =
@@ -838,55 +782,19 @@ fun OnboardingFlow(viewModel: MainViewModel, modifier: Modifier = Modifier) {
             }
           }
           OnboardingStep.FinalCheck -> {
-            if (isConnected) {
-              Button(
-                onClick = { viewModel.setOnboardingCompleted(true) },
-                modifier = Modifier.weight(1f).height(52.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors =
-                  ButtonDefaults.buttonColors(
-                    containerColor = onboardingAccent,
-                    contentColor = Color.White,
-                    disabledContainerColor = onboardingAccent.copy(alpha = 0.45f),
-                    disabledContentColor = Color.White,
-                  ),
-              ) {
-                Text("Finish", style = onboardingHeadlineStyle.copy(fontWeight = FontWeight.Bold))
-              }
-            } else {
-              Button(
-                onClick = {
-                  val parsed = parseGatewayEndpoint(gatewayUrl)
-                  if (parsed == null) {
-                    step = OnboardingStep.Gateway
-                    gatewayError = "Invalid gateway URL."
-                    return@Button
-                  }
-                  val token = persistedGatewayToken.trim()
-                  val password = gatewayPassword.trim()
-                  attemptedConnect = true
-                  viewModel.setManualEnabled(true)
-                  viewModel.setManualHost(parsed.host)
-                  viewModel.setManualPort(parsed.port)
-                  viewModel.setManualTls(parsed.tls)
-                  if (token.isNotEmpty()) {
-                    viewModel.setGatewayToken(token)
-                  }
-                  viewModel.setGatewayPassword(password)
-                  viewModel.connectManual()
-                },
-                modifier = Modifier.weight(1f).height(52.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors =
-                  ButtonDefaults.buttonColors(
-                    containerColor = onboardingAccent,
-                    contentColor = Color.White,
-                    disabledContainerColor = onboardingAccent.copy(alpha = 0.45f),
-                    disabledContentColor = Color.White,
-                  ),
-              ) {
-                Text("Connect", style = onboardingHeadlineStyle.copy(fontWeight = FontWeight.Bold))
-              }
+            Button(
+              onClick = { viewModel.setOnboardingCompleted(true) },
+              modifier = Modifier.weight(1f).height(52.dp),
+              shape = RoundedCornerShape(14.dp),
+              colors =
+                ButtonDefaults.buttonColors(
+                  containerColor = onboardingAccent,
+                  contentColor = Color.White,
+                  disabledContainerColor = onboardingAccent.copy(alpha = 0.45f),
+                  disabledContentColor = Color.White,
+                ),
+            ) {
+              Text("Finish", style = onboardingHeadlineStyle.copy(fontWeight = FontWeight.Bold))
             }
           }
         }
@@ -946,10 +854,10 @@ private fun StepRail(current: OnboardingStep) {
 @Composable
 private fun WelcomeStep() {
   StepShell(title = "What You Get") {
-    Bullet("Control the gateway and operator chat from one mobile surface.")
-    Bullet("Connect with setup code and recover pairing with CLI commands.")
+  Bullet("Everything runs from this device with cloud inference via your selected provider.")
+    Bullet("Pair with PropAi Sync via QR to enable WhatsApp automation.")
     Bullet("Enable only the permissions and capabilities you want.")
-    Bullet("Finish with a real connection check before entering the app.")
+    Bullet("Finish setup, then start chatting.")
   }
 }
 
@@ -984,9 +892,9 @@ private fun GatewayStep(
   StepShell(title = "Gateway Connection") {
     GuideBlock(title = "Scan onboarding QR") {
       Text("Run these on the gateway host:", style = onboardingCalloutStyle, color = onboardingTextSecondary)
-      CommandBlock("androidassistant qr")
+      CommandBlock("propai-sync qr")
       Text(
-        "If androidassistant qr says the gateway is only bound to loopback, rerun it with --public-url or expose the gateway on LAN/Tailscale first.",
+        "If propai-sync qr says the gateway is only bound to loopback, rerun it with --public-url or expose the gateway on LAN/Tailscale first.",
         style = onboardingCalloutStyle,
         color = onboardingTextSecondary,
       )
@@ -1037,9 +945,9 @@ private fun GatewayStep(
       Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         GuideBlock(title = "Manual setup commands") {
           Text("Run these on the gateway host:", style = onboardingCalloutStyle, color = onboardingTextSecondary)
-          CommandBlock("androidassistant qr --setup-code-only")
-          CommandBlock("androidassistant qr --json")
-          CommandBlock("androidassistant qr --public-url wss://gateway.example.com")
+          CommandBlock("propai-sync qr --setup-code-only")
+          CommandBlock("propai-sync qr --json")
+          CommandBlock("propai-sync qr --public-url wss://gateway.example.com")
           Text(
             "`--json` prints `setupCode` and `gatewayUrl`. Use `--public-url` when the gateway stays loopback-only on the host.",
             style = onboardingCalloutStyle,
@@ -1059,7 +967,7 @@ private fun GatewayStep(
           OutlinedTextField(
             value = setupCode,
             onValueChange = onSetupCodeChange,
-            placeholder = { Text("Paste code from `androidassistant qr --setup-code-only`", color = onboardingTextTertiary, style = onboardingBodyStyle) },
+            placeholder = { Text("Paste code from `propai-sync qr --setup-code-only`", color = onboardingTextTertiary, style = onboardingBodyStyle) },
             modifier = Modifier.fillMaxWidth(),
             minLines = 3,
             maxLines = 5,
@@ -1404,10 +1312,11 @@ private fun InlineDivider() {
 
 @Composable
 private fun PermissionsStep(
-  enableDiscovery: Boolean,
   enableLocation: Boolean,
   enableNotifications: Boolean,
   enableNotificationListener: Boolean,
+  enableAccessibility: Boolean,
+  enableOverlay: Boolean,
   enableMicrophone: Boolean,
   enableCamera: Boolean,
   enablePhotos: Boolean,
@@ -1419,10 +1328,11 @@ private fun PermissionsStep(
   enableSms: Boolean,
   smsAvailable: Boolean,
   context: Context,
-  onDiscoveryChange: (Boolean) -> Unit,
   onLocationChange: (Boolean) -> Unit,
   onNotificationsChange: (Boolean) -> Unit,
   onNotificationListenerChange: (Boolean) -> Unit,
+  onAccessibilityChange: (Boolean) -> Unit,
+  onOverlayChange: (Boolean) -> Unit,
   onMicrophoneChange: (Boolean) -> Unit,
   onCameraChange: (Boolean) -> Unit,
   onPhotosChange: (Boolean) -> Unit,
@@ -1431,7 +1341,6 @@ private fun PermissionsStep(
   onMotionChange: (Boolean) -> Unit,
   onSmsChange: (Boolean) -> Unit,
 ) {
-  val discoveryPermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES else Manifest.permission.ACCESS_FINE_LOCATION
   val locationGranted =
     isPermissionGranted(context, Manifest.permission.ACCESS_FINE_LOCATION) ||
       isPermissionGranted(context, Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -1456,6 +1365,8 @@ private fun PermissionsStep(
       isPermissionGranted(context, Manifest.permission.ACTIVITY_RECOGNITION)
     }
   val notificationListenerGranted = isNotificationListenerEnabled(context)
+  val accessibilityGranted = isAccessibilityServiceEnabled(context)
+  val overlayGranted = hasOverlayPermission(context)
 
   StepShell(title = "Permissions") {
     Text(
@@ -1463,14 +1374,6 @@ private fun PermissionsStep(
       style = onboardingCalloutStyle,
       color = onboardingTextSecondary,
     )
-    PermissionToggleRow(
-      title = "Gateway discovery",
-      subtitle = if (Build.VERSION.SDK_INT >= 33) "Nearby devices" else "Location (for NSD)",
-      checked = enableDiscovery,
-      granted = isPermissionGranted(context, discoveryPermission),
-      onCheckedChange = onDiscoveryChange,
-    )
-    InlineDivider()
     PermissionToggleRow(
       title = "Location",
       subtitle = "location.get (while app is open)",
@@ -1491,10 +1394,26 @@ private fun PermissionsStep(
     }
     PermissionToggleRow(
       title = "Notification listener",
-      subtitle = "notifications.list and notifications.actions (opens Android Settings)",
+      subtitle = "Listen to WhatsApp and other chat notifications",
       checked = enableNotificationListener,
       granted = notificationListenerGranted,
       onCheckedChange = onNotificationListenerChange,
+    )
+    InlineDivider()
+    PermissionToggleRow(
+      title = "Accessibility service",
+      subtitle = "Screen automation and on-device actions",
+      checked = enableAccessibility,
+      granted = accessibilityGranted,
+      onCheckedChange = onAccessibilityChange,
+    )
+    InlineDivider()
+    PermissionToggleRow(
+      title = "Display over other apps",
+      subtitle = "Show floating assistant UI",
+      checked = enableOverlay,
+      granted = overlayGranted,
+      onCheckedChange = onOverlayChange,
     )
     InlineDivider()
     PermissionToggleRow(
@@ -1550,7 +1469,7 @@ private fun PermissionsStep(
       InlineDivider()
       PermissionToggleRow(
         title = "SMS",
-        subtitle = "Allow gateway-triggered SMS sending",
+        subtitle = "Allow SMS sending",
         checked = enableSms,
         granted = isPermissionGranted(context, Manifest.permission.SEND_SMS),
         onCheckedChange = onSmsChange,
@@ -1601,50 +1520,394 @@ private fun PermissionToggleRow(
 
 @Composable
 private fun FinalStep(
-  parsedGateway: GatewayEndpointConfig?,
-  statusText: String,
-  isConnected: Boolean,
-  serverName: String?,
-  remoteAddress: String?,
-  attemptedConnect: Boolean,
   enabledPermissions: String,
-  methodLabel: String,
+  cloudProvider: CloudProvider,
+  openAiApiKey: String,
+  anthropicApiKey: String,
+  groqApiKey: String,
+  openRouterApiKey: String,
+  openAiModel: String,
+  anthropicModel: String,
+  groqModel: String,
+  openRouterModel: String,
+  elevenLabsModel: String,
+  elevenLabsApiKey: String,
+  elevenLabsAgentId: String,
+  propAiControlBaseUrl: String,
+  propAiControlEmail: String,
+  propAiControlUserId: String,
+  propAiControlTenantName: String,
+  propAiControlTenantRole: String,
+  propAiControlBusy: Boolean,
+  propAiControlError: String?,
+  propAiLicenseBaseUrl: String,
+  propAiActivationKey: String,
+  propAiActivationToken: String,
+  propAiLicenseStatus: PropAiLicenseStatus,
+  propAiLicenseBusy: Boolean,
+  propAiLicenseError: String?,
+  onProviderChange: (CloudProvider) -> Unit,
+  onOpenAiApiKeyChange: (String) -> Unit,
+  onAnthropicApiKeyChange: (String) -> Unit,
+  onGroqApiKeyChange: (String) -> Unit,
+  onOpenRouterApiKeyChange: (String) -> Unit,
+  onElevenLabsApiKeyChange: (String) -> Unit,
+  onOpenAiModelChange: (String) -> Unit,
+  onAnthropicModelChange: (String) -> Unit,
+  onGroqModelChange: (String) -> Unit,
+  onOpenRouterModelChange: (String) -> Unit,
+  onElevenLabsModelChange: (String) -> Unit,
+  onElevenLabsAgentIdChange: (String) -> Unit,
+  onPropAiControlBaseUrlChange: (String) -> Unit,
+  onPropAiLicenseBaseUrlChange: (String) -> Unit,
+  onPropAiActivationKeyChange: (String) -> Unit,
+  onPropAiLogin: (String, String) -> Unit,
+  onPropAiRegister: (String, String, String) -> Unit,
+  onPropAiRefreshProfile: () -> Unit,
+  onPropAiLogout: () -> Unit,
+  onPropAiActivateLicense: () -> Unit,
+  onPropAiRefreshLicense: () -> Unit,
+  onPropAiClearLicense: () -> Unit,
 ) {
-  val pairingRequired =
-    statusText.contains("pairing", ignoreCase = true) ||
-      statusText.contains("approval", ignoreCase = true)
-  StepShell(title = "Review") {
-    SummaryField(label = "Method", value = methodLabel)
-    SummaryField(label = "Gateway", value = parsedGateway?.displayUrl ?: "Invalid gateway URL")
-    SummaryField(label = "Enabled Permissions", value = enabledPermissions)
+  var showProviderMenu by remember { mutableStateOf(false) }
+  var propAiEmailDraft by remember(propAiControlEmail) { mutableStateOf(propAiControlEmail) }
+  var propAiPasswordDraft by remember { mutableStateOf("") }
+  var propAiTenantDraft by remember { mutableStateOf("") }
 
-    if (!attemptedConnect) {
-      Text("Press Connect to verify gateway reachability and auth.", style = onboardingCalloutStyle, color = onboardingTextSecondary)
-    } else {
-      Text("Status: $statusText", style = onboardingCalloutStyle, color = if (isConnected) onboardingSuccess else onboardingTextSecondary)
-      if (isConnected) {
-        Text("Connected to ${serverName ?: remoteAddress ?: "gateway"}", style = onboardingCalloutStyle, color = onboardingSuccess)
-      } else if (pairingRequired) {
-        GuideBlock(title = "Pairing Required") {
-          Text("Run these on the gateway host:", style = onboardingCalloutStyle, color = onboardingTextSecondary)
-          CommandBlock("androidassistant devices list")
-          CommandBlock("androidassistant devices approve <requestId>")
-          Text("Then tap Connect again.", style = onboardingCalloutStyle, color = onboardingTextSecondary)
-        }
-      } else {
-        GuideBlock(title = "Connection Check") {
-          Text("Verify gateway reachability, TLS/auth values, and the setup-code source URL.", style = onboardingCalloutStyle, color = onboardingTextSecondary)
-          CommandBlock("androidassistant qr --public-url wss://gateway.example.com")
+  StepShell(title = "Cloud setup") {
+    Text(
+      "Choose a cloud provider for chat. You can update this later in Settings.",
+      style = onboardingCalloutStyle,
+      color = onboardingTextSecondary,
+    )
+    Box {
+      Surface(
+        onClick = { showProviderMenu = true },
+        shape = RoundedCornerShape(14.dp),
+        color = onboardingSurface,
+        border = BorderStroke(1.dp, onboardingBorderStrong),
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
           Text(
-            "If setup-code generation fails because the gateway is loopback-only, set a reachable public URL or expose the gateway on LAN/Tailscale.",
-            style = onboardingCalloutStyle,
-            color = onboardingTextSecondary,
+            "Provider: ${cloudProvider.label}",
+            style = onboardingCaption1Style.copy(fontWeight = FontWeight.SemiBold),
+            color = onboardingText,
+          )
+          Icon(
+            Icons.Default.ArrowDropDown,
+            contentDescription = "Select provider",
+            tint = onboardingTextSecondary,
+          )
+        }
+      }
+      DropdownMenu(expanded = showProviderMenu, onDismissRequest = { showProviderMenu = false }) {
+        CloudProvider.entries.forEach { provider ->
+          DropdownMenuItem(
+            text = { Text(provider.label, style = onboardingBodyStyle, color = onboardingText) },
+            onClick = {
+              onProviderChange(provider)
+              showProviderMenu = false
+            },
           )
         }
       }
     }
+
+    when (cloudProvider) {
+      CloudProvider.OpenAI -> {
+        OnboardingTextField(
+          value = openAiApiKey,
+          onValueChange = onOpenAiApiKeyChange,
+          label = "OpenAI API key",
+          isSecret = true,
+        )
+        OnboardingTextField(
+          value = openAiModel,
+          onValueChange = onOpenAiModelChange,
+          label = "OpenAI model",
+          placeholder = CloudProvider.OpenAI.defaultModel,
+        )
+      }
+      CloudProvider.Anthropic -> {
+        OnboardingTextField(
+          value = anthropicApiKey,
+          onValueChange = onAnthropicApiKeyChange,
+          label = "Anthropic API key",
+          isSecret = true,
+        )
+        OnboardingTextField(
+          value = anthropicModel,
+          onValueChange = onAnthropicModelChange,
+          label = "Anthropic model",
+          placeholder = CloudProvider.Anthropic.defaultModel,
+        )
+      }
+      CloudProvider.Groq -> {
+        OnboardingTextField(
+          value = groqApiKey,
+          onValueChange = onGroqApiKeyChange,
+          label = "Groq API key",
+          isSecret = true,
+        )
+        OnboardingTextField(
+          value = groqModel,
+          onValueChange = onGroqModelChange,
+          label = "Groq model",
+          placeholder = CloudProvider.Groq.defaultModel,
+        )
+      }
+      CloudProvider.OpenRouter -> {
+        OnboardingTextField(
+          value = openRouterApiKey,
+          onValueChange = onOpenRouterApiKeyChange,
+          label = "OpenRouter API key",
+          isSecret = true,
+        )
+        OnboardingTextField(
+          value = openRouterModel,
+          onValueChange = onOpenRouterModelChange,
+          label = "OpenRouter model",
+          placeholder = CloudProvider.OpenRouter.defaultModel,
+        )
+      }
+      CloudProvider.ElevenLabs -> {
+        OnboardingTextField(
+          value = elevenLabsApiKey,
+          onValueChange = onElevenLabsApiKeyChange,
+          label = "ElevenLabs API key",
+          isSecret = true,
+        )
+        OnboardingTextField(
+          value = elevenLabsModel,
+          onValueChange = onElevenLabsModelChange,
+          label = "ElevenLabs model",
+          placeholder = CloudProvider.ElevenLabs.defaultModel,
+        )
+      }
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+    Text(
+      "Voice (ElevenLabs)",
+      style = onboardingCaption1Style.copy(fontWeight = FontWeight.SemiBold),
+      color = onboardingText,
+    )
+    OnboardingTextField(
+      value = elevenLabsApiKey,
+      onValueChange = onElevenLabsApiKeyChange,
+      label = "ElevenLabs API key",
+      isSecret = true,
+    )
+    OnboardingTextField(
+      value = elevenLabsAgentId,
+      onValueChange = onElevenLabsAgentIdChange,
+      label = "ElevenLabs Agent ID",
+    )
+    Text(
+      "Voice tab uses ElevenLabs Conversational AI. Add a voice ID later in Settings for TTS playback.",
+      style = onboardingCalloutStyle,
+      color = onboardingTextSecondary,
+    )
+
+    Spacer(modifier = Modifier.height(16.dp))
+    Text(
+      "PropAi Sync",
+      style = onboardingCaption1Style.copy(fontWeight = FontWeight.SemiBold),
+      color = onboardingText,
+    )
+    Text(
+      "Link PropAi Sync to your workspace for tenant access and license checks.",
+      style = onboardingCalloutStyle,
+      color = onboardingTextSecondary,
+    )
+    OnboardingTextField(
+      value = propAiControlBaseUrl,
+      onValueChange = onPropAiControlBaseUrlChange,
+      label = "Control API URL",
+    )
+    OnboardingTextField(
+      value = propAiEmailDraft,
+      onValueChange = { propAiEmailDraft = it },
+      label = "Account email",
+    )
+    OnboardingTextField(
+      value = propAiPasswordDraft,
+      onValueChange = { propAiPasswordDraft = it },
+      label = "Password",
+      isSecret = true,
+    )
+    OnboardingTextField(
+      value = propAiTenantDraft,
+      onValueChange = { propAiTenantDraft = it },
+      label = "Tenant name (for register)",
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+      Button(
+        onClick = { onPropAiLogin(propAiEmailDraft, propAiPasswordDraft) },
+        enabled = !propAiControlBusy,
+        modifier = Modifier.weight(1f).height(48.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = onboardingAccent, contentColor = Color.White),
+      ) {
+        Text("Login", style = onboardingCalloutStyle)
+      }
+      Button(
+        onClick = { onPropAiRegister(propAiEmailDraft, propAiPasswordDraft, propAiTenantDraft) },
+        enabled = !propAiControlBusy,
+        modifier = Modifier.weight(1f).height(48.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = onboardingAccent, contentColor = Color.White),
+      ) {
+        Text("Register", style = onboardingCalloutStyle)
+      }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+      Button(
+        onClick = onPropAiRefreshProfile,
+        enabled = !propAiControlBusy && propAiControlUserId.isNotBlank(),
+        modifier = Modifier.weight(1f).height(48.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = onboardingAccent, contentColor = Color.White),
+      ) {
+        Text("Refresh", style = onboardingCalloutStyle)
+      }
+      Button(
+        onClick = onPropAiLogout,
+        enabled = !propAiControlBusy && propAiControlUserId.isNotBlank(),
+        modifier = Modifier.weight(1f).height(48.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = onboardingSurface, contentColor = onboardingText),
+      ) {
+        Text("Logout", style = onboardingCalloutStyle)
+      }
+    }
+    if (!propAiControlError.isNullOrBlank()) {
+      Text(propAiControlError.orEmpty(), style = onboardingCalloutStyle, color = onboardingWarning)
+    }
+    Text(
+      if (propAiControlTenantName.isNotBlank()) {
+        val role = propAiControlTenantRole.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""
+        "Linked tenant: ${propAiControlTenantName}$role"
+      } else {
+        "Linked tenant: not linked"
+      },
+      style = onboardingCalloutStyle,
+      color = onboardingTextSecondary,
+    )
+    OnboardingTextField(
+      value = propAiLicenseBaseUrl,
+      onValueChange = onPropAiLicenseBaseUrlChange,
+      label = "License API URL",
+    )
+    OnboardingTextField(
+      value = propAiActivationKey,
+      onValueChange = onPropAiActivationKeyChange,
+      label = "Activation key",
+      isSecret = true,
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+      Button(
+        onClick = onPropAiActivateLicense,
+        enabled = !propAiLicenseBusy,
+        modifier = Modifier.weight(1f).height(48.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = onboardingAccent, contentColor = Color.White),
+      ) {
+        Text("Activate", style = onboardingCalloutStyle)
+      }
+      Button(
+        onClick = onPropAiRefreshLicense,
+        enabled = !propAiLicenseBusy && propAiActivationToken.isNotBlank(),
+        modifier = Modifier.weight(1f).height(48.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = onboardingAccent, contentColor = Color.White),
+      ) {
+        Text("Refresh", style = onboardingCalloutStyle)
+      }
+      Button(
+        onClick = onPropAiClearLicense,
+        enabled = !propAiLicenseBusy,
+        modifier = Modifier.weight(1f).height(48.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = onboardingSurface, contentColor = onboardingText),
+      ) {
+        Text("Clear", style = onboardingCalloutStyle)
+      }
+    }
+    val licenseLabel = if (propAiLicenseStatus.valid) "Active" else "Inactive"
+    val planLabel = propAiLicenseStatus.plan ?: propAiLicenseStatus.status ?: "—"
+    val expiryLabel = propAiLicenseStatus.expiresAt ?: propAiLicenseStatus.graceUntil ?: "—"
+    Text(
+      "License: $licenseLabel · Plan: $planLabel · Expires: $expiryLabel",
+      style = onboardingCalloutStyle,
+      color = onboardingTextSecondary,
+    )
+    if (!propAiLicenseError.isNullOrBlank()) {
+      Text(propAiLicenseError.orEmpty(), style = onboardingCalloutStyle, color = onboardingWarning)
+    }
+
+    SummaryField(label = "Enabled Permissions", value = enabledPermissions)
+    Text("You can change these later in Settings.", style = onboardingCalloutStyle, color = onboardingTextSecondary)
   }
 }
+
+@Composable
+private fun OnboardingTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    placeholder: String? = null,
+    isSecret: Boolean = false,
+  ) {
+    var revealSecret by remember { mutableStateOf(false) }
+    OutlinedTextField(
+      value = value,
+      onValueChange = onValueChange,
+      label = { Text(label, style = onboardingCaption1Style, color = onboardingTextSecondary) },
+      modifier = Modifier.fillMaxWidth(),
+      singleLine = true,
+      placeholder = {
+        if (placeholder != null) {
+          Text(placeholder, style = onboardingBodyStyle, color = onboardingTextTertiary)
+        }
+      },
+      textStyle = onboardingBodyStyle.copy(color = onboardingText),
+      shape = RoundedCornerShape(14.dp),
+      visualTransformation =
+        if (isSecret && !revealSecret) {
+          PasswordVisualTransformation()
+        } else {
+          VisualTransformation.None
+        },
+      trailingIcon =
+        if (isSecret) {
+          {
+            IconButton(onClick = { revealSecret = !revealSecret }) {
+              Icon(
+                imageVector = if (revealSecret) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                contentDescription = if (revealSecret) "Hide API key" else "Show API key",
+                tint = onboardingTextSecondary,
+              )
+            }
+          }
+        } else {
+          null
+        },
+      colors =
+        OutlinedTextFieldDefaults.colors(
+          focusedContainerColor = onboardingSurface,
+          unfocusedContainerColor = onboardingSurface,
+          focusedBorderColor = onboardingAccent,
+          unfocusedBorderColor = onboardingBorder,
+          focusedTextColor = onboardingText,
+          unfocusedTextColor = onboardingText,
+          cursorColor = onboardingAccent,
+        ),
+    )
+  }
 
 @Composable
 private fun SummaryField(label: String, value: String) {
@@ -1710,6 +1973,44 @@ private fun isNotificationListenerEnabled(context: Context): Boolean {
 
 private fun openNotificationListenerSettings(context: Context) {
   val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+  runCatching {
+    context.startActivity(intent)
+  }.getOrElse {
+    openAppSettings(context)
+  }
+}
+
+private fun isAccessibilityServiceEnabled(context: Context): Boolean {
+  val manager = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager ?: return false
+  val enabledServices = manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+  val expected = ComponentName(context, AutomationAccessibilityService::class.java).flattenToString()
+  return enabledServices.any { it.id == expected }
+}
+
+private fun openAccessibilitySettings(context: Context) {
+  val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+  runCatching {
+    context.startActivity(intent)
+  }.getOrElse {
+    openAppSettings(context)
+  }
+}
+
+private fun hasOverlayPermission(context: Context): Boolean {
+  return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+    Settings.canDrawOverlays(context)
+  } else {
+    true
+  }
+}
+
+private fun openOverlaySettings(context: Context) {
+  if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+  val intent =
+    Intent(
+      Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+      Uri.parse("package:${context.packageName}"),
+    ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
   runCatching {
     context.startActivity(intent)
   }.getOrElse {

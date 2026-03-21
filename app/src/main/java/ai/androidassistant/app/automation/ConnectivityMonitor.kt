@@ -9,6 +9,7 @@ import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 
 /**
  * Monitors WiFi and Bluetooth connectivity changes
@@ -31,25 +32,57 @@ class ConnectivityMonitor {
     wifiReceiver =
       object : BroadcastReceiver() {
         override fun onReceive(context: Context, _intent: Intent) {
+          val appContext = context.applicationContext
+          if (
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_NETWORK_STATE) !=
+              android.content.pm.PackageManager.PERMISSION_GRANTED
+          ) {
+            Log.w(TAG, "Skipping connectivity update; ACCESS_NETWORK_STATE not granted")
+            return
+          }
           val connectivityManager =
-            context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-          val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-          val network = connectivityManager.activeNetwork
-          val capabilities = connectivityManager.getNetworkCapabilities(network)
-          val connected = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-          val ssid =
-            @Suppress("DEPRECATION")
-            wifiManager.connectionInfo
-              ?.ssid
-              ?.removeSurrounding("\"")
-              ?.takeUnless { it.equals("<unknown ssid>", ignoreCase = true) }
+            appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+          if (connectivityManager == null) {
+            Log.w(TAG, "Skipping connectivity update; ConnectivityManager unavailable")
+            return
+          }
+          val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+          val hasWifiPermission =
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_WIFI_STATE) ==
+              android.content.pm.PackageManager.PERMISSION_GRANTED
+          runCatching {
+              val network = connectivityManager.activeNetwork
+              val capabilities = connectivityManager.getNetworkCapabilities(network)
+              val connected = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+              val ssid =
+                runCatching {
+                    @Suppress("DEPRECATION")
+                    if (!hasWifiPermission) {
+                      Log.w(TAG, "Skipping SSID read; ACCESS_WIFI_STATE not granted")
+                      null
+                    } else {
+                      wifiManager
+                        ?.connectionInfo
+                        ?.ssid
+                        ?.removeSurrounding("\"")
+                        ?.takeUnless { it.equals("<unknown ssid>", ignoreCase = true) }
+                    }
+                  }
+                  .getOrElse { error ->
+                    Log.w(TAG, "Unable to read WiFi SSID", error)
+                    null
+                  }
 
-          Log.d(TAG, "WiFi state changed: connected=$connected ssid=$ssid")
-          checkConnectivityRules(
-            type = TriggerConfig.ConnectivityType.WIFI,
-            ssid = ssid,
-            connected = connected,
-          )
+              Log.d(TAG, "WiFi state changed: connected=$connected ssid=$ssid")
+              checkConnectivityRules(
+                type = TriggerConfig.ConnectivityType.WIFI,
+                ssid = ssid,
+                connected = connected,
+              )
+            }
+            .onFailure { error ->
+              Log.w(TAG, "Failed to handle connectivity broadcast safely", error)
+            }
         }
       }
 

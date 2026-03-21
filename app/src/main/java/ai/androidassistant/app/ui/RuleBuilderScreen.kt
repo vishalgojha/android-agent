@@ -76,7 +76,7 @@ private val supportedActionOptions =
     ActionOption(
       type = ActionType.INVOKE_COMMAND,
       title = "Invoke Command",
-      description = "Call a local AndroidAssistant invoke command with trigger metadata.",
+      description = "Call a local PropAi Sync invoke command with trigger metadata.",
     ),
   )
 
@@ -243,7 +243,7 @@ fun RuleBuilderScreen(viewModel: AutomationViewModel, onNavigateBack: () -> Unit
         OutlinedTextField(
           value = invokeCommand,
           onValueChange = { invokeCommand = it },
-          label = { Text("AndroidAssistant Command") },
+          label = { Text("PropAi Sync Command") },
           supportingText = { Text("Example: notifications.list or device.describe") },
           modifier = Modifier.fillMaxWidth(),
           singleLine = true,

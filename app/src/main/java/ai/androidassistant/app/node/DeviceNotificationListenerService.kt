@@ -9,6 +9,9 @@ import android.content.Intent
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import ai.androidassistant.app.automation.AutomationEngine
+import ai.androidassistant.app.SecurePrefs
+import ai.androidassistant.app.isKnownChatPackage
+import ai.androidassistant.app.isPassiveChatListeningEnabledForNotification
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -127,6 +130,9 @@ private object DeviceNotificationStore {
 }
 
 class DeviceNotificationListenerService : NotificationListenerService() {
+  private val prefs: SecurePrefs by lazy { SecurePrefs(this) }
+  private val chatStore: ChatListeningStore by lazy { ChatListeningStore(this) }
+
   override fun onListenerConnected() {
     super.onListenerConnected()
     activeService = this
@@ -156,11 +162,47 @@ class DeviceNotificationListenerService : NotificationListenerService() {
     if (entry.packageName == packageName) {
       return
     }
-    AutomationEngine.onNotificationPosted(
-      packageName = entry.packageName,
-      title = entry.title,
-      text = entry.text,
-    )
+    val shouldListenToChat =
+      isPassiveChatListeningEnabledForNotification(
+        packageName = entry.packageName,
+        title = entry.title,
+        text = entry.text,
+        selectedPackages = prefs.chatListeningPackages.value,
+        conversationFilters = prefs.chatListeningConversationFilters.value,
+      )
+    val packageIsChatLike =
+      isKnownChatPackage(entry.packageName) ||
+        prefs.chatListeningPackages.value.any { it.equals(entry.packageName, ignoreCase = true) }
+
+    if (!packageIsChatLike || shouldListenToChat) {
+      AutomationEngine.onNotificationPosted(
+        packageName = entry.packageName,
+        title = entry.title,
+        text = entry.text,
+      )
+    }
+    if (shouldListenToChat) {
+      val messageText = entry.text?.trim().orEmpty()
+      if (messageText.isNotEmpty()) {
+        chatStore.addMessage(
+          ChatListeningMessage(
+            packageName = entry.packageName,
+            sender = entry.title,
+            conversation = entry.subText,
+            text = messageText,
+            timestampMs = entry.postTimeMs,
+          ),
+        )
+      }
+      AutomationEngine.onMessageTrigger(
+        appPackage = entry.packageName,
+        sender = entry.title,
+        message = entry.text,
+      )
+    }
+    if (packageIsChatLike && !shouldListenToChat) {
+      return
+    }
     emitNotificationsChanged(
       buildJsonObject {
         put("change", JsonPrimitive("posted"))
@@ -187,6 +229,21 @@ class DeviceNotificationListenerService : NotificationListenerService() {
     }
     DeviceNotificationStore.remove(key)
     if (removed.packageName == packageName) {
+      return
+    }
+    val removedEntry = removed.toEntry()
+    val shouldListenToChat =
+      isPassiveChatListeningEnabledForNotification(
+        packageName = removedEntry.packageName,
+        title = removedEntry.title,
+        text = removedEntry.text,
+        selectedPackages = prefs.chatListeningPackages.value,
+        conversationFilters = prefs.chatListeningConversationFilters.value,
+      )
+    val packageIsChatLike =
+      isKnownChatPackage(removed.packageName) ||
+        prefs.chatListeningPackages.value.any { it.equals(removed.packageName, ignoreCase = true) }
+    if (packageIsChatLike && !shouldListenToChat) {
       return
     }
     emitNotificationsChanged(

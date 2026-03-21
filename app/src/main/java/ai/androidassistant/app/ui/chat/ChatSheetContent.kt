@@ -6,76 +6,125 @@ import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.androidassistant.app.MainViewModel
-import ai.androidassistant.app.chat.ChatSessionEntry
 import ai.androidassistant.app.chat.OutgoingAttachment
-import ai.androidassistant.app.ui.mobileAccent
-import ai.androidassistant.app.ui.mobileBorder
 import ai.androidassistant.app.ui.mobileBorderStrong
 import ai.androidassistant.app.ui.mobileCallout
-import ai.androidassistant.app.ui.mobileCaption1
 import ai.androidassistant.app.ui.mobileCaption2
 import ai.androidassistant.app.ui.mobileDanger
-import ai.androidassistant.app.ui.mobileSuccess
-import ai.androidassistant.app.ui.mobileSuccessSoft
+import ai.androidassistant.app.ui.mobileSurfaceStrong
 import ai.androidassistant.app.ui.mobileText
 import ai.androidassistant.app.ui.mobileTextSecondary
-import ai.androidassistant.app.ui.mobileWarning
-import ai.androidassistant.app.ui.mobileWarningSoft
+import android.Manifest
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.PackageManager
+import android.app.Activity
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.max
 
 @Composable
 fun ChatSheetContent(viewModel: MainViewModel) {
   val messages by viewModel.chatMessages.collectAsState()
   val errorText by viewModel.chatError.collectAsState()
   val pendingRunCount by viewModel.pendingRunCount.collectAsState()
-  val healthOk by viewModel.chatHealthOk.collectAsState()
   val sessionKey by viewModel.chatSessionKey.collectAsState()
   val mainSessionKey by viewModel.mainSessionKey.collectAsState()
   val thinkingLevel by viewModel.chatThinkingLevel.collectAsState()
   val streamingAssistantText by viewModel.chatStreamingAssistantText.collectAsState()
   val pendingToolCalls by viewModel.chatPendingToolCalls.collectAsState()
-  val sessions by viewModel.chatSessions.collectAsState()
+  val micEnabled by viewModel.micEnabled.collectAsState()
+  val micIsListening by viewModel.micIsListening.collectAsState()
+  val micCooldown by viewModel.micCooldown.collectAsState()
+  val micLiveTranscript by viewModel.micLiveTranscript.collectAsState()
+  val onboardingCompleted by viewModel.onboardingCompleted.collectAsState()
+  val welcomeMessageSent by viewModel.welcomeMessageSent.collectAsState()
 
   LaunchedEffect(mainSessionKey) {
     viewModel.loadChat(mainSessionKey)
     viewModel.refreshChatSessions(limit = 200)
   }
 
+  LaunchedEffect(onboardingCompleted, welcomeMessageSent, messages.size) {
+    if (onboardingCompleted && !welcomeMessageSent && messages.isEmpty()) {
+      viewModel.showWelcomeMessageIfNeeded()
+    }
+  }
+
   val context = LocalContext.current
+  val view = LocalView.current
+  val density = LocalDensity.current
+  val bottomInsetPxState = remember { mutableStateOf(0) }
+  val lifecycleOwner = LocalLifecycleOwner.current
   val resolver = context.contentResolver
   val scope = rememberCoroutineScope()
+  var hasMicPermission by remember { mutableStateOf(context.hasRecordAudioPermission()) }
+  var pendingMicEnable by remember { mutableStateOf(false) }
+
+  DisposableEffect(lifecycleOwner, context) {
+    val observer =
+      LifecycleEventObserver { _, event ->
+        if (event == Lifecycle.Event.ON_RESUME) {
+          hasMicPermission = context.hasRecordAudioPermission()
+        }
+      }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+  }
+
+  val requestMicPermission =
+    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+      hasMicPermission = granted
+      if (granted && pendingMicEnable) {
+        viewModel.setMicEnabled(true)
+      }
+      pendingMicEnable = false
+    }
 
   val attachments = remember { mutableStateListOf<PendingImageAttachment>() }
+  var inputText by rememberSaveable(sessionKey) { mutableStateOf("") }
+  LaunchedEffect(micLiveTranscript, micEnabled, sessionKey) {
+    if (micEnabled && !micLiveTranscript.isNullOrBlank() && inputText.isBlank()) {
+      inputText = micLiveTranscript!!.trim()
+    }
+  }
 
   val pickImages =
     rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
@@ -99,17 +148,9 @@ fun ChatSheetContent(viewModel: MainViewModel) {
     modifier =
       Modifier
         .fillMaxSize()
-        .padding(horizontal = 20.dp, vertical = 12.dp),
+        .padding(horizontal = 8.dp, vertical = 2.dp),
     verticalArrangement = Arrangement.spacedBy(8.dp),
   ) {
-    ChatThreadSelector(
-      sessionKey = sessionKey,
-      sessions = sessions,
-      mainSessionKey = mainSessionKey,
-      healthOk = healthOk,
-      onSelectSession = { key -> viewModel.switchChatSession(key) },
-    )
-
     if (!errorText.isNullOrBlank()) {
       ChatErrorRail(errorText = errorText!!)
     }
@@ -119,24 +160,43 @@ fun ChatSheetContent(viewModel: MainViewModel) {
       pendingRunCount = pendingRunCount,
       pendingToolCalls = pendingToolCalls,
       streamingAssistantText = streamingAssistantText,
-      healthOk = healthOk,
       modifier = Modifier.weight(1f, fill = true),
     )
 
-    Row(modifier = Modifier.fillMaxWidth().imePadding()) {
+    DisposableEffect(view) {
+      val listener =
+        androidx.core.view.OnApplyWindowInsetsListener { _, insets ->
+          val ime = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+          val nav = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+          bottomInsetPxState.value = max(ime, nav)
+          insets
+        }
+      ViewCompat.setOnApplyWindowInsetsListener(view, listener)
+      ViewCompat.requestApplyInsets(view)
+      onDispose { ViewCompat.setOnApplyWindowInsetsListener(view, null) }
+    }
+
+    val bottomInsetDp = with(density) { bottomInsetPxState.value.toDp() }
+
+    Row(modifier = Modifier.fillMaxWidth().padding(bottom = bottomInsetDp)) {
       ChatComposer(
-        healthOk = healthOk,
-        thinkingLevel = thinkingLevel,
+        inputText = inputText,
+        onInputChange = { inputText = it },
         pendingRunCount = pendingRunCount,
         attachments = attachments,
+        micEnabled = micEnabled,
+        micIsListening = micIsListening,
+        micCooldown = micCooldown,
+        onToggleMic = {
+          if (hasMicPermission) {
+            viewModel.setMicEnabled(!micEnabled)
+          } else {
+            pendingMicEnable = true
+            requestMicPermission.launch(Manifest.permission.RECORD_AUDIO)
+          }
+        },
         onPickImages = { pickImages.launch("image/*") },
         onRemoveAttachment = { id -> attachments.removeAll { it.id == id } },
-        onSetThinkingLevel = { level -> viewModel.setChatThinkingLevel(level) },
-        onRefresh = {
-          viewModel.refreshChat()
-          viewModel.refreshChatSessions(limit = 200)
-        },
-        onAbort = { viewModel.abortChat() },
         onSend = { text ->
           val outgoing =
             attachments.map { att ->
@@ -149,6 +209,7 @@ fun ChatSheetContent(viewModel: MainViewModel) {
             }
           viewModel.sendChat(message = text, thinking = thinkingLevel, attachments = outgoing)
           attachments.clear()
+          inputText = ""
         },
       )
     }
@@ -156,89 +217,10 @@ fun ChatSheetContent(viewModel: MainViewModel) {
 }
 
 @Composable
-private fun ChatThreadSelector(
-  sessionKey: String,
-  sessions: List<ChatSessionEntry>,
-  mainSessionKey: String,
-  healthOk: Boolean,
-  onSelectSession: (String) -> Unit,
-) {
-  val sessionOptions = resolveSessionChoices(sessionKey, sessions, mainSessionKey = mainSessionKey)
-  val currentSessionLabel =
-    friendlySessionName(sessionOptions.firstOrNull { it.key == sessionKey }?.displayName ?: sessionKey)
-
-  Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.SpaceBetween,
-      verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-    ) {
-      Text(
-        text = "SESSION",
-        style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp),
-        color = mobileTextSecondary,
-      )
-      Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-        Text(
-          text = currentSessionLabel,
-          style = mobileCallout.copy(fontWeight = FontWeight.SemiBold),
-          color = mobileText,
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-        )
-        ChatConnectionPill(healthOk = healthOk)
-      }
-    }
-
-    Row(
-      modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-      horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-      for (entry in sessionOptions) {
-        val active = entry.key == sessionKey
-        Surface(
-          onClick = { onSelectSession(entry.key) },
-          shape = RoundedCornerShape(14.dp),
-          color = if (active) mobileAccent else Color.White,
-          border = BorderStroke(1.dp, if (active) Color(0xFF154CAD) else mobileBorderStrong),
-          tonalElevation = 0.dp,
-          shadowElevation = 0.dp,
-        ) {
-          Text(
-            text = friendlySessionName(entry.displayName ?: entry.key),
-            style = mobileCaption1.copy(fontWeight = if (active) FontWeight.Bold else FontWeight.SemiBold),
-            color = if (active) Color.White else mobileText,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-          )
-        }
-      }
-    }
-  }
-}
-
-@Composable
-private fun ChatConnectionPill(healthOk: Boolean) {
-  Surface(
-    shape = RoundedCornerShape(999.dp),
-    color = if (healthOk) mobileSuccessSoft else mobileWarningSoft,
-    border = BorderStroke(1.dp, if (healthOk) mobileSuccess.copy(alpha = 0.35f) else mobileWarning.copy(alpha = 0.35f)),
-  ) {
-    Text(
-      text = if (healthOk) "Connected" else "Offline",
-      style = mobileCaption1.copy(fontWeight = FontWeight.SemiBold),
-      color = if (healthOk) mobileSuccess else mobileWarning,
-      modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-    )
-  }
-}
-
-@Composable
 private fun ChatErrorRail(errorText: String) {
   Surface(
     modifier = Modifier.fillMaxWidth(),
-    color = androidx.compose.ui.graphics.Color.White,
+    color = mobileSurfaceStrong.copy(alpha = 0.96f),
     shape = RoundedCornerShape(12.dp),
     border = androidx.compose.foundation.BorderStroke(1.dp, mobileDanger),
   ) {
@@ -252,6 +234,20 @@ private fun ChatErrorRail(errorText: String) {
     }
   }
 }
+
+private fun Context.hasRecordAudioPermission(): Boolean {
+  return (
+    ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+      PackageManager.PERMISSION_GRANTED
+    )
+}
+
+private fun Context.findActivity(): Activity? =
+  when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+  }
 
 data class PendingImageAttachment(
   val id: String,

@@ -1,14 +1,27 @@
 package ai.androidassistant.app.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import ai.androidassistant.app.automation.AutomationRule
@@ -30,29 +43,36 @@ fun AutomationTab(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .background(mobileBackgroundGradient)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        // Header
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Automation Rules",
-                style = MaterialTheme.typography.headlineMedium
+                text = "Automation",
+                style = mobileTitle2,
+                color = mobileText
             )
-            
-            FloatingActionButton(
+
+            Button(
                 onClick = onNavigateToBuilder,
-                containerColor = MaterialTheme.colorScheme.primary
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = mobileAccent,
+                    contentColor = Color(0xFF08111B)
+                ),
+                shape = RoundedCornerShape(10.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
             ) {
                 Icon(
                     imageVector = Icons.Default.Add,
-                    contentDescription = "Create Rule"
+                    contentDescription = "Create Rule",
+                    modifier = Modifier.size(16.dp)
                 )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("New rule", style = mobileCallout.copy(fontWeight = FontWeight.SemiBold))
             }
         }
         
@@ -65,28 +85,17 @@ fun AutomationTab(
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.AutoFixHigh,
-                        contentDescription = null,
-                        modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = "No automation rules yet",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "Tap + to create your first rule",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        style = mobileHeadline,
+                        color = mobileTextSecondary
                     )
                 }
             }
         } else {
             LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(top = 8.dp, bottom = 6.dp)
             ) {
                 items(rules, key = { it.id }) { rule ->
                     RuleCard(
@@ -142,19 +151,16 @@ fun RuleCard(
     onToggle: () -> Unit,
     onDelete: () -> Unit
 ) {
-    Card(
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (rule.isEnabled) 
-                MaterialTheme.colorScheme.surfaceVariant 
-            else 
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
+        color = if (rule.isEnabled) mobileSurfaceStrong else mobileSurfaceStrong.copy(alpha = 0.7f),
+        border = BorderStroke(1.dp, mobileBorderStrong),
+        shape = RoundedCornerShape(10.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
+                .padding(10.dp)
         ) {
             // Header row
             Row(
@@ -164,7 +170,7 @@ fun RuleCard(
             ) {
                 Text(
                     text = rule.name,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = mobileHeadline,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
@@ -177,7 +183,7 @@ fun RuleCard(
                         Icon(
                             imageVector = Icons.Default.Delete,
                             contentDescription = "Delete",
-                            tint = MaterialTheme.colorScheme.error
+                            tint = mobileDanger
                         )
                     }
                     
@@ -188,7 +194,7 @@ fun RuleCard(
                 }
             }
             
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             
             // Trigger info
             Row(
@@ -198,13 +204,13 @@ fun RuleCard(
                     imageVector = Icons.Default.Timeline,
                     contentDescription = null,
                     modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = mobileTextTertiary
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     text = formatTriggerType(rule.triggerType),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = mobileCaption1,
+                    color = mobileTextSecondary
                 )
             }
             
@@ -218,17 +224,17 @@ fun RuleCard(
                     imageVector = Icons.Default.PlayArrow,
                     contentDescription = null,
                     modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = mobileTextTertiary
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     text = formatActionType(rule.actionType),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = mobileCaption1,
+                    color = mobileTextSecondary
                 )
             }
             
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             
             // Stats
             Row(
@@ -237,15 +243,15 @@ fun RuleCard(
             ) {
                 Text(
                     text = "Triggered: ${rule.triggerCount} times",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = mobileCaption2,
+                    color = mobileTextSecondary
                 )
                 
                 rule.lastTriggered?.let { lastTriggered ->
                     Text(
                         text = "Last: ${formatDate(lastTriggered)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        style = mobileCaption2,
+                        color = mobileTextSecondary
                     )
                 }
             }

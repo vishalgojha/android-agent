@@ -115,7 +115,7 @@ class PermissionRequester(private val activity: ComponentActivity) {
 
   private fun buildRationaleMessage(permissions: List<String>): String {
     val labels = permissions.map { permissionLabel(it) }
-    return "AndroidAssistant needs ${labels.joinToString(", ")} permissions to continue."
+    return "PropAi Sync needs ${labels.joinToString(", ")} permissions to continue."
   }
 
   private fun buildSettingsMessage(permissions: List<String>): String {

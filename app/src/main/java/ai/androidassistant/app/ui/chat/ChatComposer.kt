@@ -3,9 +3,7 @@ package ai.androidassistant.app.ui.chat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,264 +14,127 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.AttachFile
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ai.androidassistant.app.ui.mobileAccent
-import ai.androidassistant.app.ui.mobileAccentSoft
-import ai.androidassistant.app.ui.mobileBorder
 import ai.androidassistant.app.ui.mobileBorderStrong
-import ai.androidassistant.app.ui.mobileCallout
 import ai.androidassistant.app.ui.mobileCaption1
-import ai.androidassistant.app.ui.mobileHeadline
 import ai.androidassistant.app.ui.mobileSurface
+import ai.androidassistant.app.ui.mobileSurfaceStrong
 import ai.androidassistant.app.ui.mobileText
 import ai.androidassistant.app.ui.mobileTextSecondary
 import ai.androidassistant.app.ui.mobileTextTertiary
 
 @Composable
 fun ChatComposer(
-  healthOk: Boolean,
-  thinkingLevel: String,
+  inputText: String,
+  onInputChange: (String) -> Unit,
   pendingRunCount: Int,
   attachments: List<PendingImageAttachment>,
+  micEnabled: Boolean,
+  micIsListening: Boolean,
+  micCooldown: Boolean,
+  onToggleMic: () -> Unit,
   onPickImages: () -> Unit,
   onRemoveAttachment: (id: String) -> Unit,
-  onSetThinkingLevel: (level: String) -> Unit,
-  onRefresh: () -> Unit,
-  onAbort: () -> Unit,
   onSend: (text: String) -> Unit,
 ) {
-  var input by rememberSaveable { mutableStateOf("") }
-  var showThinkingMenu by remember { mutableStateOf(false) }
-
-  val canSend = pendingRunCount == 0 && (input.trim().isNotEmpty() || attachments.isNotEmpty()) && healthOk
-  val sendBusy = pendingRunCount > 0
-
-  Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-      Box(modifier = Modifier.weight(1f)) {
-        Surface(
-          onClick = { showThinkingMenu = true },
-          shape = RoundedCornerShape(14.dp),
-          color = mobileAccentSoft,
-          border = BorderStroke(1.dp, mobileBorderStrong),
-        ) {
-          Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-          ) {
-            Text(
-              text = "Thinking: ${thinkingLabel(thinkingLevel)}",
-              style = mobileCaption1.copy(fontWeight = FontWeight.SemiBold),
-              color = mobileText,
-            )
-            Icon(Icons.Default.ArrowDropDown, contentDescription = "Select thinking level", tint = mobileTextSecondary)
-          }
-        }
-
-        DropdownMenu(expanded = showThinkingMenu, onDismissRequest = { showThinkingMenu = false }) {
-          ThinkingMenuItem("off", thinkingLevel, onSetThinkingLevel) { showThinkingMenu = false }
-          ThinkingMenuItem("low", thinkingLevel, onSetThinkingLevel) { showThinkingMenu = false }
-          ThinkingMenuItem("medium", thinkingLevel, onSetThinkingLevel) { showThinkingMenu = false }
-          ThinkingMenuItem("high", thinkingLevel, onSetThinkingLevel) { showThinkingMenu = false }
-        }
-      }
-
-      SecondaryActionButton(
-        label = "Attach",
-        icon = Icons.Default.AttachFile,
-        enabled = true,
-        onClick = onPickImages,
-      )
+  val canSend = pendingRunCount == 0 && (inputText.trim().isNotEmpty() || attachments.isNotEmpty())
+  val micActive = micEnabled || micIsListening
+  val sendNow = {
+    if (canSend) {
+      val text = inputText
+      onInputChange("")
+      onSend(text)
     }
+  }
+
+  Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
 
     if (attachments.isNotEmpty()) {
       AttachmentsStrip(attachments = attachments, onRemoveAttachment = onRemoveAttachment)
     }
 
-    HorizontalDivider(color = mobileBorder)
-
-    Text(
-      text = "MESSAGE",
-      style = mobileCaption1.copy(fontWeight = FontWeight.Bold, letterSpacing = 0.9.sp),
-      color = mobileTextSecondary,
-    )
-
     OutlinedTextField(
-      value = input,
-      onValueChange = { input = it },
-      modifier = Modifier.fillMaxWidth().height(92.dp),
-      placeholder = { Text("Type a message", style = mobileBodyStyle(), color = mobileTextTertiary) },
-      minLines = 2,
-      maxLines = 5,
+      value = inputText,
+      onValueChange = onInputChange,
+      modifier =
+        Modifier
+          .fillMaxWidth()
+          .height(56.dp)
+          .onPreviewKeyEvent { event ->
+            val nativeEvent = event.nativeKeyEvent
+            if (nativeEvent.keyCode == AndroidKeyEvent.KEYCODE_ENTER && nativeEvent.action == AndroidKeyEvent.ACTION_UP) {
+              sendNow()
+              true
+            } else {
+              false
+            }
+          },
+      placeholder = { Text("Message PropAi Sync", style = mobileBodyStyle(), color = mobileTextTertiary) },
+      minLines = 1,
+      maxLines = 3,
       textStyle = mobileBodyStyle().copy(color = mobileText),
-      shape = RoundedCornerShape(14.dp),
+      shape = RoundedCornerShape(28.dp),
       colors = chatTextFieldColors(),
+      keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+      keyboardActions =
+        KeyboardActions(
+          onSend = { sendNow() },
+        ),
+      trailingIcon = {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+          IconButton(
+            onClick = onPickImages,
+            enabled = true,
+            modifier = Modifier.size(36.dp),
+            colors = IconButtonDefaults.iconButtonColors(containerColor = mobileSurfaceStrong),
+          ) {
+            Icon(
+              imageVector = Icons.Default.AttachFile,
+              contentDescription = "Attach",
+              tint = mobileTextSecondary,
+              modifier = Modifier.size(18.dp),
+            )
+          }
+          IconButton(
+            onClick = onToggleMic,
+            enabled = !micCooldown,
+            modifier = Modifier.size(36.dp),
+            colors = IconButtonDefaults.iconButtonColors(containerColor = mobileSurfaceStrong),
+          ) {
+            Icon(
+              imageVector = if (micActive) Icons.Default.Mic else Icons.Default.MicOff,
+              contentDescription = if (micActive) "Mic on" else "Mic off",
+              tint = if (micActive) mobileText else mobileTextSecondary,
+              modifier = Modifier.size(18.dp),
+            )
+          }
+        }
+      },
     )
 
-    if (!healthOk) {
-      Text(
-        text = "Gateway is offline. Connect first in the Connect tab.",
-        style = mobileCallout,
-        color = ai.androidassistant.app.ui.mobileWarning,
-      )
-    }
-
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        SecondaryActionButton(
-          label = "Refresh",
-          icon = Icons.Default.Refresh,
-          enabled = true,
-          compact = true,
-          onClick = onRefresh,
-        )
-
-        SecondaryActionButton(
-          label = "Abort",
-          icon = Icons.Default.Stop,
-          enabled = pendingRunCount > 0,
-          compact = true,
-          onClick = onAbort,
-        )
-      }
-
-      Button(
-        onClick = {
-          val text = input
-          input = ""
-          onSend(text)
-        },
-        enabled = canSend,
-        modifier = Modifier.weight(1f).height(48.dp),
-        shape = RoundedCornerShape(14.dp),
-        colors =
-          ButtonDefaults.buttonColors(
-            containerColor = mobileAccent,
-            contentColor = Color.White,
-            disabledContainerColor = mobileBorderStrong,
-            disabledContentColor = mobileTextTertiary,
-          ),
-        border = BorderStroke(1.dp, if (canSend) Color(0xFF154CAD) else mobileBorderStrong),
-      ) {
-        if (sendBusy) {
-          CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
-        } else {
-          Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
-        }
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-          text = "Send",
-          style = mobileHeadline.copy(fontWeight = FontWeight.Bold),
-          maxLines = 1,
-          overflow = TextOverflow.Ellipsis,
-        )
-      }
-    }
-  }
-}
-
-@Composable
-private fun SecondaryActionButton(
-  label: String,
-  icon: androidx.compose.ui.graphics.vector.ImageVector,
-  enabled: Boolean,
-  compact: Boolean = false,
-  onClick: () -> Unit,
-) {
-  Button(
-    onClick = onClick,
-    enabled = enabled,
-    modifier = if (compact) Modifier.size(44.dp) else Modifier.height(44.dp),
-    shape = RoundedCornerShape(14.dp),
-    colors =
-      ButtonDefaults.buttonColors(
-        containerColor = Color.White,
-        contentColor = mobileTextSecondary,
-        disabledContainerColor = Color.White,
-        disabledContentColor = mobileTextTertiary,
-      ),
-    border = BorderStroke(1.dp, mobileBorderStrong),
-    contentPadding = if (compact) PaddingValues(0.dp) else ButtonDefaults.ContentPadding,
-  ) {
-    Icon(icon, contentDescription = label, modifier = Modifier.size(14.dp))
-    if (!compact) {
-      Spacer(modifier = Modifier.width(5.dp))
-      Text(
-        text = label,
-        style = mobileCallout.copy(fontWeight = FontWeight.SemiBold),
-        color = if (enabled) mobileTextSecondary else mobileTextTertiary,
-      )
-    }
-  }
-}
-
-@Composable
-private fun ThinkingMenuItem(
-  value: String,
-  current: String,
-  onSet: (String) -> Unit,
-  onDismiss: () -> Unit,
-) {
-  DropdownMenuItem(
-    text = { Text(thinkingLabel(value), style = mobileCallout, color = mobileText) },
-    onClick = {
-      onSet(value)
-      onDismiss()
-    },
-    trailingIcon = {
-      if (value == current.trim().lowercase()) {
-        Text("✓", style = mobileCallout, color = mobileAccent)
-      } else {
-        Spacer(modifier = Modifier.width(10.dp))
-      }
-    },
-  )
-}
-
-private fun thinkingLabel(raw: String): String {
-  return when (raw.trim().lowercase()) {
-    "low" -> "Low"
-    "medium" -> "Medium"
-    "high" -> "High"
-    else -> "Off"
   }
 }
 
@@ -299,7 +160,7 @@ private fun AttachmentsStrip(
 private fun AttachmentChip(fileName: String, onRemove: () -> Unit) {
   Surface(
     shape = RoundedCornerShape(999.dp),
-    color = mobileAccentSoft,
+    color = mobileSurfaceStrong,
     border = BorderStroke(1.dp, mobileBorderStrong),
   ) {
     Row(
@@ -317,7 +178,7 @@ private fun AttachmentChip(fileName: String, onRemove: () -> Unit) {
       Surface(
         onClick = onRemove,
         shape = RoundedCornerShape(999.dp),
-        color = Color.White,
+        color = mobileSurfaceStrong,
         border = BorderStroke(1.dp, mobileBorderStrong),
       ) {
         Text(
@@ -334,10 +195,10 @@ private fun AttachmentChip(fileName: String, onRemove: () -> Unit) {
 @Composable
 private fun chatTextFieldColors() =
   OutlinedTextFieldDefaults.colors(
-    focusedContainerColor = mobileSurface,
-    unfocusedContainerColor = mobileSurface,
-    focusedBorderColor = mobileAccent,
-    unfocusedBorderColor = mobileBorder,
+    focusedContainerColor = mobileSurfaceStrong,
+    unfocusedContainerColor = mobileSurfaceStrong,
+    focusedBorderColor = mobileBorderStrong,
+    unfocusedBorderColor = mobileBorderStrong,
     focusedTextColor = mobileText,
     unfocusedTextColor = mobileText,
     cursorColor = mobileAccent,

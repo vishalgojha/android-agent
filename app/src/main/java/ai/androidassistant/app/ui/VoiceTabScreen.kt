@@ -78,7 +78,8 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
   val activity = remember(context) { context.findActivity() }
   val listState = rememberLazyListState()
 
-  val gatewayStatus by viewModel.statusText.collectAsState()
+  val modelStatus by viewModel.statusText.collectAsState()
+  val displayName by viewModel.displayName.collectAsState()
   val micEnabled by viewModel.micEnabled.collectAsState()
   val micCooldown by viewModel.micCooldown.collectAsState()
   val speakerEnabled by viewModel.speakerEnabled.collectAsState()
@@ -91,6 +92,7 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
 
   val hasStreamingAssistant = micConversation.any { it.role == VoiceConversationRole.Assistant && it.isStreaming }
   val showThinkingBubble = micIsSending && !hasStreamingAssistant
+  val agentName = displayName.trim().ifEmpty { "PropAi Sync" }
 
   var hasMicPermission by remember { mutableStateOf(context.hasRecordAudioPermission()) }
   var pendingMicEnable by remember { mutableStateOf(false) }
@@ -133,8 +135,8 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
         .background(mobileBackgroundGradient)
         .imePadding()
         .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
-        .padding(horizontal = 20.dp, vertical = 14.dp),
-    verticalArrangement = Arrangement.spacedBy(10.dp),
+        .padding(horizontal = 12.dp, vertical = 8.dp),
+    verticalArrangement = Arrangement.spacedBy(8.dp),
   ) {
     LazyColumn(
       state = listState,
@@ -150,23 +152,12 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
           ) {
             Column(
               horizontalAlignment = Alignment.CenterHorizontally,
-              verticalArrangement = Arrangement.spacedBy(10.dp),
+              verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-              Icon(
-                imageVector = Icons.Default.Mic,
-                contentDescription = null,
-                modifier = Modifier.size(48.dp),
-                tint = mobileTextTertiary,
-              )
               Text(
-                "Tap the mic to start",
-                style = mobileHeadline,
+                "Tap mic to start",
+                style = mobileTitle2,
                 color = mobileTextSecondary,
-              )
-              Text(
-                "Each pause sends a turn automatically.",
-                style = mobileCallout,
-                color = mobileTextTertiary,
               )
             }
           }
@@ -174,12 +165,12 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
       }
 
       items(items = micConversation, key = { it.id }) { entry ->
-        VoiceTurnBubble(entry = entry)
+        VoiceTurnBubble(entry = entry, agentName = agentName)
       }
 
       if (showThinkingBubble) {
         item {
-          VoiceThinkingBubble()
+          VoiceThinkingBubble(agentName = agentName)
         }
       }
     }
@@ -192,13 +183,13 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
       if (!micLiveTranscript.isNullOrBlank()) {
         Surface(
           modifier = Modifier.fillMaxWidth(),
-          shape = RoundedCornerShape(14.dp),
-          color = mobileAccentSoft,
-          border = BorderStroke(1.dp, mobileAccent.copy(alpha = 0.2f)),
+          shape = RoundedCornerShape(10.dp),
+          color = mobileSurfaceStrong.copy(alpha = 0.96f),
+          border = BorderStroke(1.dp, mobileBorderStrong),
         ) {
           Text(
             micLiveTranscript!!.trim(),
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
             style = mobileCallout,
             color = mobileText,
           )
@@ -217,7 +208,7 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
           modifier = Modifier.size(48.dp),
           colors =
             IconButtonDefaults.iconButtonColors(
-              containerColor = if (speakerEnabled) mobileSurface else mobileDangerSoft,
+              containerColor = if (speakerEnabled) mobileSurfaceStrong else mobileDangerSoft,
             ),
         ) {
           Icon(
@@ -265,9 +256,9 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
             colors =
               ButtonDefaults.buttonColors(
                 containerColor = if (micCooldown) mobileTextSecondary else if (micEnabled) mobileDanger else mobileAccent,
-                contentColor = Color.White,
+                contentColor = Color(0xFF08111B),
                 disabledContainerColor = mobileTextSecondary,
-                disabledContentColor = Color.White.copy(alpha = 0.5f),
+                disabledContentColor = Color(0xFF08111B).copy(alpha = 0.5f),
               ),
           ) {
             Icon(
@@ -292,8 +283,15 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
           micEnabled -> "Listening"
           else -> "Mic off"
         }
+      val micStatus = micStatusText.trim()
+      val statusSuffix =
+        if (micStatus.isNotEmpty() && micStatus != stateText && micStatus != "Mic off") {
+          micStatus
+        } else {
+          stateText
+        }
       Text(
-        "$gatewayStatus · $stateText",
+        "${modelStatus.ifBlank { "Cloud: OpenRouter" }} · $statusSuffix",
         style = mobileCaption1,
         color = mobileTextSecondary,
       )
@@ -328,7 +326,7 @@ fun VoiceTabScreen(viewModel: MainViewModel) {
 }
 
 @Composable
-private fun VoiceTurnBubble(entry: VoiceConversationEntry) {
+private fun VoiceTurnBubble(entry: VoiceConversationEntry, agentName: String) {
   val isUser = entry.role == VoiceConversationRole.User
   Row(
     modifier = Modifier.fillMaxWidth(),
@@ -337,15 +335,15 @@ private fun VoiceTurnBubble(entry: VoiceConversationEntry) {
     Surface(
       modifier = Modifier.fillMaxWidth(0.90f),
       shape = RoundedCornerShape(12.dp),
-      color = if (isUser) mobileAccentSoft else Color.White,
-      border = BorderStroke(1.dp, if (isUser) mobileAccent else mobileBorderStrong),
+      color = if (isUser) mobileAccentSoft.copy(alpha = 0.86f) else mobileSurfaceStrong.copy(alpha = 0.96f),
+      border = BorderStroke(1.dp, if (isUser) mobileAccent.copy(alpha = 0.45f) else mobileBorderStrong),
     ) {
       Column(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 11.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(3.dp),
       ) {
         Text(
-          if (isUser) "You" else "AndroidAssistant",
+          if (isUser) "You" else agentName,
           style = mobileCaption2.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp),
           color = if (isUser) mobileAccent else mobileTextSecondary,
         )
@@ -360,12 +358,12 @@ private fun VoiceTurnBubble(entry: VoiceConversationEntry) {
 }
 
 @Composable
-private fun VoiceThinkingBubble() {
+private fun VoiceThinkingBubble(agentName: String) {
   Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
     Surface(
       modifier = Modifier.fillMaxWidth(0.68f),
       shape = RoundedCornerShape(12.dp),
-      color = Color.White,
+      color = mobileSurfaceStrong.copy(alpha = 0.96f),
       border = BorderStroke(1.dp, mobileBorderStrong),
     ) {
       Row(
@@ -374,7 +372,7 @@ private fun VoiceThinkingBubble() {
         verticalAlignment = Alignment.CenterVertically,
       ) {
         ThinkingDots(color = mobileTextSecondary)
-        Text("AndroidAssistant is thinking…", style = mobileCallout, color = mobileTextSecondary)
+        Text("$agentName is thinking…", style = mobileCallout, color = mobileTextSecondary)
       }
     }
   }

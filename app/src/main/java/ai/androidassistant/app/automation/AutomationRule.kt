@@ -120,7 +120,7 @@ enum class ActionType {
     CREATE_REMINDER,       // Add to calendar/reminder
     LOG_EVENT,             // Record to history
     TRIGGER_WEBHOOK,       // Call external API
-    INVOKE_COMMAND         // Call AndroidAssistant invoke command
+    INVOKE_COMMAND         // Call PropAi Sync invoke command
 }
 
 /**

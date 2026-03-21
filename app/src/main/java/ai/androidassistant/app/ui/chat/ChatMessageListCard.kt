@@ -7,8 +7,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -17,7 +15,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import ai.androidassistant.app.chat.ChatMessage
 import ai.androidassistant.app.chat.ChatPendingToolCall
-import ai.androidassistant.app.ui.mobileBorder
 import ai.androidassistant.app.ui.mobileCallout
 import ai.androidassistant.app.ui.mobileHeadline
 import ai.androidassistant.app.ui.mobileText
@@ -29,7 +26,6 @@ fun ChatMessageListCard(
   pendingRunCount: Int,
   pendingToolCalls: List<ChatPendingToolCall>,
   streamingAssistantText: String?,
-  healthOk: Boolean,
   modifier: Modifier = Modifier,
 ) {
   val listState = rememberLazyListState()
@@ -44,8 +40,8 @@ fun ChatMessageListCard(
       modifier = Modifier.fillMaxSize(),
       state = listState,
       reverseLayout = true,
-      verticalArrangement = Arrangement.spacedBy(10.dp),
-      contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 8.dp),
+      verticalArrangement = Arrangement.spacedBy(6.dp),
+      contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 2.dp),
     ) {
       // With reverseLayout = true, index 0 renders at the BOTTOM.
       // So we emit newest items first: streaming → tools → typing → messages (newest→oldest).
@@ -75,35 +71,24 @@ fun ChatMessageListCard(
     }
 
     if (messages.isEmpty() && pendingRunCount == 0 && pendingToolCalls.isEmpty() && streamingAssistantText.isNullOrBlank()) {
-      EmptyChatHint(modifier = Modifier.align(Alignment.Center), healthOk = healthOk)
+      EmptyChatHint(modifier = Modifier.align(Alignment.Center))
     }
   }
 }
 
 @Composable
-private fun EmptyChatHint(modifier: Modifier = Modifier, healthOk: Boolean) {
-  Surface(
+private fun EmptyChatHint(modifier: Modifier = Modifier) {
+  androidx.compose.foundation.layout.Column(
     modifier = modifier.fillMaxWidth(),
-    shape = RoundedCornerShape(14.dp),
-    color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.9f),
-    border = androidx.compose.foundation.BorderStroke(1.dp, mobileBorder),
+    verticalArrangement = Arrangement.spacedBy(4.dp),
+    horizontalAlignment = Alignment.CenterHorizontally,
   ) {
-    androidx.compose.foundation.layout.Column(
-      modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-      verticalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-      Text("No messages yet", style = mobileHeadline, color = mobileText)
-      Text(
-        text =
-          if (healthOk) {
-            "Send the first prompt to start this session."
-          } else {
-            "Connect gateway first, then return to chat."
-          },
-        style = mobileCallout,
-        color = mobileTextSecondary,
-      )
-    }
+    Text("No messages yet", style = mobileHeadline, color = mobileText)
+    Text(
+      text = "Send the first prompt to start this session.",
+      style = mobileCallout,
+      color = mobileTextSecondary,
+    )
   }
 }
 

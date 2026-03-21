@@ -47,6 +47,7 @@ import kotlin.coroutines.resumeWithException
 class GatewayDiscovery(
   context: Context,
   private val scope: CoroutineScope,
+  private val enabled: Boolean = true,
 ) {
   private val nsd = context.getSystemService(NsdManager::class.java)
   private val connectivity = context.getSystemService(ConnectivityManager::class.java)
@@ -90,9 +91,13 @@ class GatewayDiscovery(
     }
 
   init {
-    startLocalDiscovery()
-    if (!wideAreaDomain.isNullOrBlank()) {
-      startUnicastDiscovery(wideAreaDomain)
+    if (!enabled) {
+      _statusText.value = "Discovery paused"
+    } else {
+      startLocalDiscovery()
+      if (!wideAreaDomain.isNullOrBlank()) {
+        startUnicastDiscovery(wideAreaDomain)
+      }
     }
   }
 

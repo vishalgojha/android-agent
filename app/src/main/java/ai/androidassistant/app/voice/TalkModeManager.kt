@@ -327,6 +327,8 @@ class TalkModeManager(
     ttsJob?.cancel()
     ttsJob = scope.launch {
       reloadConfig()
+      stopActiveStreamingTts()
+      stopSpeaking(resetInterrupt = false)
       ensurePlaybackActive(playbackToken)
       _isSpeaking.value = true
       _statusText.value = "Speaking…"
@@ -434,6 +436,7 @@ class TalkModeManager(
   suspend fun speakAssistantReply(text: String) {
     if (!playbackEnabled) return
     val playbackToken = playbackGeneration.incrementAndGet()
+    stopActiveStreamingTts()
     stopSpeaking(resetInterrupt = false)
     ensureConfigLoaded()
     ensurePlaybackActive(playbackToken)
@@ -879,15 +882,14 @@ class TalkModeManager(
       val canUseElevenLabs = !voiceId.isNullOrBlank() && !apiKey.isNullOrEmpty()
       if (!canUseElevenLabs) {
         if (voiceId.isNullOrBlank()) {
-          Log.w(tag, "missing voiceId; falling back to system voice")
+          Log.w(tag, "missing voiceId; ElevenLabs playback skipped")
         }
         if (apiKey.isNullOrEmpty()) {
-          Log.w(tag, "missing ELEVENLABS_API_KEY; falling back to system voice")
+          Log.w(tag, "missing ELEVENLABS_API_KEY; ElevenLabs playback skipped")
         }
-        ensurePlaybackActive(playbackToken)
-        _usingFallbackTts.value = true
-        _statusText.value = "Speaking (System)…"
-        speakWithSystemTts(cleaned, playbackToken)
+        _usingFallbackTts.value = false
+        _statusText.value = "ElevenLabs not configured"
+        return
       } else {
         _usingFallbackTts.value = false
         val ttsStarted = SystemClock.elapsedRealtime()
@@ -916,20 +918,9 @@ class TalkModeManager(
         Log.d(tag, "assistant speech cancelled")
         return
       }
-      Log.w(tag, "speak failed: ${err.message ?: err::class.simpleName}; falling back to system voice")
-      try {
-        ensurePlaybackActive(playbackToken)
-        _usingFallbackTts.value = true
-        _statusText.value = "Speaking (System)…"
-        speakWithSystemTts(cleaned, playbackToken)
-      } catch (fallbackErr: Throwable) {
-        if (isPlaybackCancelled(fallbackErr, playbackToken)) {
-          Log.d(tag, "assistant fallback speech cancelled")
-          return
-        }
-        _statusText.value = "Speak failed: ${fallbackErr.message ?: fallbackErr::class.simpleName}"
-        Log.w(tag, "system voice failed: ${fallbackErr.message ?: fallbackErr::class.simpleName}")
-      }
+      _usingFallbackTts.value = false
+      _statusText.value = "ElevenLabs playback failed"
+      Log.w(tag, "elevenlabs playback failed: ${err.message ?: err::class.simpleName}")
     } finally {
 
       _isSpeaking.value = false
@@ -1257,10 +1248,13 @@ class TalkModeManager(
 
   /** Stop any active TTS immediately — call when user taps mic to barge in. */
   fun stopTts() {
+    playbackGeneration.incrementAndGet()
+    ttsJob?.cancel()
+    ttsJob = null
     stopActiveStreamingTts()
     stopSpeaking(resetInterrupt = true)
     _isSpeaking.value = false
-    _statusText.value = "Listening"
+    _statusText.value = if (_isEnabled.value) "Listening" else "Off"
   }
 
   private fun stopSpeaking(resetInterrupt: Boolean = true) {
@@ -1410,13 +1404,9 @@ class TalkModeManager(
         "reloadConfig apiKey=${if (apiKey != null) "set" else "null"} voiceId=$defaultVoiceId silenceTimeoutMs=${parsed.silenceTimeoutMs}",
       )
       if (parsed.interruptOnSpeech != null) interruptOnSpeech = parsed.interruptOnSpeech
-      activeProviderIsElevenLabs = parsed.activeProvider == defaultTalkProvider
-      if (!activeProviderIsElevenLabs) {
-        // Clear ElevenLabs credentials so playAssistant won't attempt ElevenLabs calls
-        apiKey = null
-        defaultVoiceId = null
-        if (!voiceOverrideActive) currentVoiceId = null
-        Log.w(tag, "talk provider ${parsed.activeProvider} unsupported; using system voice fallback")
+      activeProviderIsElevenLabs = true
+      if (parsed.activeProvider != defaultTalkProvider) {
+        Log.w(tag, "talk provider ${parsed.activeProvider} ignored; forcing ElevenLabs playback")
       } else if (parsed.normalizedPayload) {
         Log.d(tag, "talk config provider=elevenlabs")
       }

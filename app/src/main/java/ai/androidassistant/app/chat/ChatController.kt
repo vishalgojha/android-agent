@@ -23,6 +23,11 @@ class ChatController(
   private val session: GatewaySession,
   private val json: Json,
   private val supportsChatSubscribe: Boolean,
+  private val localMode: Boolean = false,
+  private val localResponder: (suspend (List<ChatMessage>, String) -> String)? = null,
+  private val memoryStore: ChatMemoryStore? = null,
+  private val onAssistantReply: (suspend (String) -> Unit)? = null,
+  private val onUserMessage: (() -> Unit)? = null,
 ) {
   private val _sessionKey = MutableStateFlow("main")
   val sessionKey: StateFlow<String> = _sessionKey.asStateFlow()
@@ -39,7 +44,7 @@ class ChatController(
   private val _healthOk = MutableStateFlow(false)
   val healthOk: StateFlow<Boolean> = _healthOk.asStateFlow()
 
-  private val _thinkingLevel = MutableStateFlow("off")
+  private val _thinkingLevel = MutableStateFlow("high")
   val thinkingLevel: StateFlow<String> = _thinkingLevel.asStateFlow()
 
   private val _pendingRunCount = MutableStateFlow(0)
@@ -60,8 +65,16 @@ class ChatController(
   private val pendingRunTimeoutMs = 120_000L
 
   private var lastHealthPollAtMs: Long? = null
+  private var localBootstrapped = false
+
+  init {
+    if (localMode) {
+      _healthOk.value = true
+    }
+  }
 
   fun onDisconnected(message: String) {
+    if (localMode) return
     _healthOk.value = false
     // Not an error; keep connection status in the UI pill.
     _errorText.value = null
@@ -105,6 +118,7 @@ class ChatController(
     val key = sessionKey.trim()
     if (key.isEmpty()) return
     if (key == _sessionKey.value) return
+    persistLocalSessionAsync()
     _sessionKey.value = key
     scope.launch { bootstrap(forceHealth = true) }
   }
@@ -116,7 +130,8 @@ class ChatController(
   ) {
     val trimmed = message.trim()
     if (trimmed.isEmpty() && attachments.isEmpty()) return
-    if (!_healthOk.value) {
+    onUserMessage?.invoke()
+    if (!localMode && !_healthOk.value) {
       _errorText.value = "Gateway health not OK; cannot send"
       return
     }
@@ -149,6 +164,9 @@ class ChatController(
           content = userContent,
           timestampMs = System.currentTimeMillis(),
         )
+    if (localMode) {
+      persistLocalSessionAsync()
+    }
 
     armPendingRunTimeout(runId)
     synchronized(pendingRuns) {
@@ -160,6 +178,39 @@ class ChatController(
     _streamingAssistantText.value = null
     pendingToolCallsById.clear()
     publishPendingToolCalls()
+
+    if (localMode) {
+      scope.launch {
+        val responder = localResponder
+        if (responder == null) {
+          clearPendingRun(runId)
+          _errorText.value = "Local model unavailable."
+          return@launch
+        }
+        val messageSnapshot = _messages.value
+        val reply =
+          try {
+            responder(messageSnapshot, text)
+          } catch (err: Throwable) {
+            _errorText.value = err.message ?: "Local response failed"
+            ""
+          }
+        if (reply.isNotBlank()) {
+          _messages.value =
+            _messages.value +
+              ChatMessage(
+                id = UUID.randomUUID().toString(),
+                role = "assistant",
+                content = listOf(ChatMessageContent(type = "text", text = reply.trim())),
+                timestampMs = System.currentTimeMillis(),
+              )
+          onAssistantReply?.invoke(reply.trim())
+          persistLocalSessionAsync()
+        }
+        clearPendingRun(runId)
+      }
+      return
+    }
 
     scope.launch {
       try {
@@ -204,6 +255,14 @@ class ChatController(
   }
 
   fun abort() {
+    if (localMode) {
+      clearPendingRuns()
+      pendingToolCallsById.clear()
+      publishPendingToolCalls()
+      _streamingAssistantText.value = null
+      _errorText.value = null
+      return
+    }
     val runIds =
       synchronized(pendingRuns) {
         pendingRuns.toList()
@@ -226,6 +285,7 @@ class ChatController(
   }
 
   fun handleGatewayEvent(event: String, payloadJson: String?) {
+    if (localMode) return
     when (event) {
       "tick" -> {
         scope.launch { pollHealthIfNeeded(force = false) }
@@ -250,6 +310,11 @@ class ChatController(
   }
 
   private suspend fun bootstrap(forceHealth: Boolean) {
+    if (localMode) {
+      bootstrapLocal()
+      return
+    }
+
     _errorText.value = null
     _healthOk.value = false
     clearPendingRuns()
@@ -278,6 +343,10 @@ class ChatController(
   }
 
   private suspend fun fetchSessions(limit: Int?) {
+    if (localMode) {
+      _sessions.value = listOf(ChatSessionEntry(key = "main", updatedAtMs = System.currentTimeMillis(), displayName = "Main"))
+      return
+    }
     try {
       val params =
         buildJsonObject {
@@ -293,6 +362,10 @@ class ChatController(
   }
 
   private suspend fun pollHealthIfNeeded(force: Boolean) {
+    if (localMode) {
+      _healthOk.value = true
+      return
+    }
     val now = System.currentTimeMillis()
     val last = lastHealthPollAtMs
     if (!force && last != null && now - last < 10_000) return
@@ -302,6 +375,41 @@ class ChatController(
       _healthOk.value = true
     } catch (_: Throwable) {
       _healthOk.value = false
+    }
+  }
+
+  fun injectAssistantMessage(text: String) {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return
+    _messages.value =
+      _messages.value +
+        ChatMessage(
+          id = UUID.randomUUID().toString(),
+          role = "assistant",
+          content = listOf(ChatMessageContent(type = "text", text = trimmed)),
+          timestampMs = System.currentTimeMillis(),
+        )
+    if (localMode) {
+      persistLocalSessionAsync()
+    }
+  }
+
+  private fun bootstrapLocal() {
+    _errorText.value = null
+    _healthOk.value = true
+    _sessionId.value = "local"
+    clearPendingRuns()
+    pendingToolCallsById.clear()
+    publishPendingToolCalls()
+    _streamingAssistantText.value = null
+    val store = memoryStore
+    if (store != null) {
+      _sessions.value = store.loadSessions()
+      _messages.value = store.loadSession(_sessionKey.value)
+      localBootstrapped = true
+    } else if (!localBootstrapped) {
+      _sessions.value = listOf(ChatSessionEntry(key = "main", updatedAtMs = System.currentTimeMillis(), displayName = "Main"))
+      localBootstrapped = true
     }
   }
 
@@ -515,6 +623,27 @@ class ChatController(
       "medium" -> "medium"
       "high" -> "high"
       else -> "off"
+    }
+  }
+
+  private fun persistLocalSessionAsync() {
+    if (!localMode) return
+    val store = memoryStore ?: return
+    val sessionKey = _sessionKey.value
+    val messagesSnapshot = _messages.value
+    val displayName =
+      if (sessionKey == "main") {
+        "Main"
+      } else {
+        sessionKey
+      }
+    scope.launch {
+      store.saveSession(
+        sessionKey = sessionKey,
+        messages = messagesSnapshot,
+        displayName = displayName,
+      )
+      _sessions.value = store.loadSessions()
     }
   }
 }

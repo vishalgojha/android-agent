@@ -2,6 +2,7 @@ package ai.androidassistant.app.ui.chat
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +12,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,10 +44,14 @@ import ai.androidassistant.app.ui.mobileCaption2
 import ai.androidassistant.app.ui.mobileCodeBg
 import ai.androidassistant.app.ui.mobileCodeText
 import ai.androidassistant.app.ui.mobileHeadline
+import ai.androidassistant.app.ui.mobileSurfaceStrong
 import ai.androidassistant.app.ui.mobileText
 import ai.androidassistant.app.ui.mobileTextSecondary
 import ai.androidassistant.app.ui.mobileWarning
 import ai.androidassistant.app.ui.mobileWarningSoft
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.Toast
 import java.util.Locale
 
 private data class ChatBubbleStyle(
@@ -56,6 +65,10 @@ private data class ChatBubbleStyle(
 fun ChatMessageBubble(message: ChatMessage) {
   val role = message.role.trim().lowercase(Locale.US)
   val style = bubbleStyle(role)
+  val context = LocalContext.current
+  val clipboard = remember(context) {
+    context.getSystemService(ClipboardManager::class.java)
+  }
 
   // Filter to only displayable content parts (text with content, or base64 images).
   val displayableContent =
@@ -68,7 +81,24 @@ fun ChatMessageBubble(message: ChatMessage) {
 
   if (displayableContent.isEmpty()) return
 
-  ChatBubbleContainer(style = style, roleLabel = roleLabel(role)) {
+  val copyText = buildCopyText(displayableContent)
+  val canCopy = copyText.isNotBlank()
+  val copyAction =
+    if (canCopy) {
+      {
+        clipboard?.setPrimaryClip(ClipData.newPlainText("message", copyText))
+        Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+      }
+    } else {
+      null
+    }
+
+  ChatBubbleContainer(
+    style = style,
+    roleLabel = roleLabel(role),
+    onCopy = copyAction,
+    onLongPressCopy = copyAction,
+  ) {
     ChatMessageBody(content = displayableContent, textColor = mobileText)
   }
 }
@@ -78,8 +108,19 @@ private fun ChatBubbleContainer(
   style: ChatBubbleStyle,
   roleLabel: String,
   modifier: Modifier = Modifier,
+  onCopy: (() -> Unit)? = null,
+  onLongPressCopy: (() -> Unit)? = null,
   content: @Composable () -> Unit,
 ) {
+  val copyModifier =
+    if (onLongPressCopy != null) {
+      Modifier.combinedClickable(
+        onClick = {},
+        onLongClick = onLongPressCopy,
+      )
+    } else {
+      Modifier
+    }
   Row(
     modifier = modifier.fillMaxWidth(),
     horizontalArrangement = if (style.alignEnd) Arrangement.End else Arrangement.Start,
@@ -90,17 +131,33 @@ private fun ChatBubbleContainer(
       color = style.containerColor,
       tonalElevation = 0.dp,
       shadowElevation = 0.dp,
-      modifier = Modifier.fillMaxWidth(0.90f),
+      modifier = Modifier.fillMaxWidth().then(copyModifier),
     ) {
       Column(
-        modifier = Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(3.dp),
+        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
       ) {
-        Text(
-          text = roleLabel,
-          style = mobileCaption2.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp),
-          color = style.roleColor,
-        )
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(
+            text = roleLabel,
+            style = mobileCaption2.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp),
+            color = style.roleColor,
+          )
+          if (onCopy != null) {
+            IconButton(onClick = onCopy, modifier = Modifier.size(28.dp)) {
+              Icon(
+                imageVector = Icons.Default.ContentCopy,
+                contentDescription = "Copy",
+                tint = style.roleColor,
+                modifier = Modifier.size(14.dp),
+              )
+            }
+          }
+        }
         content()
       }
     }
@@ -215,7 +272,7 @@ private fun bubbleStyle(role: String): ChatBubbleStyle {
     else ->
       ChatBubbleStyle(
         alignEnd = false,
-        containerColor = Color.White,
+        containerColor = mobileSurfaceStrong.copy(alpha = 0.96f),
         borderColor = mobileBorderStrong,
         roleColor = mobileTextSecondary,
       )
@@ -230,6 +287,26 @@ private fun roleLabel(role: String): String {
   }
 }
 
+private fun buildCopyText(parts: List<ChatMessageContent>): String {
+  val textParts =
+    parts.mapNotNull { part ->
+      when {
+        part.type == "text" && !part.text.isNullOrBlank() -> part.text
+        part.type != "text" -> {
+          val name = part.fileName?.takeIf { it.isNotBlank() } ?: part.type
+          val mime = part.mimeType?.takeIf { it.isNotBlank() }
+          if (mime != null) {
+            "[Attachment: $name · $mime]"
+          } else {
+            "[Attachment: $name]"
+          }
+        }
+        else -> null
+      }
+    }
+  return textParts.joinToString("\n").trim()
+}
+
 @Composable
 private fun ChatBase64Image(base64: String, mimeType: String?) {
   val imageState = rememberBase64ImageState(base64)
@@ -239,7 +316,7 @@ private fun ChatBase64Image(base64: String, mimeType: String?) {
     Surface(
       shape = RoundedCornerShape(10.dp),
       border = BorderStroke(1.dp, mobileBorder),
-      color = Color.White,
+      color = mobileSurfaceStrong.copy(alpha = 0.96f),
       modifier = Modifier.fillMaxWidth(),
     ) {
       Image(

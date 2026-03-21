@@ -245,8 +245,8 @@ fun ConnectTabScreen(viewModel: MainViewModel) {
       Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(14.dp),
-        color = Color.White,
-        border = BorderStroke(1.dp, mobileBorder),
+        color = mobileSurfaceStrong.copy(alpha = 0.94f),
+        border = BorderStroke(1.dp, mobileBorderStrong),
       ) {
         Column(
           modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
@@ -267,14 +267,14 @@ fun ConnectTabScreen(viewModel: MainViewModel) {
           }
 
           Text("Run these on the gateway host:", style = mobileCallout, color = mobileTextSecondary)
-          CommandBlock("androidassistant qr --setup-code-only")
-          CommandBlock("androidassistant qr --json")
+          CommandBlock("propai-sync qr --setup-code-only")
+          CommandBlock("propai-sync qr --json")
           HintCard(
             title = "Setup code reachability",
             body =
-              "Setup codes need a gateway URL this device can reach. If androidassistant qr says the gateway is only bound to loopback, rerun it with --public-url or set plugins.entries.\"device-pair\".config.publicUrl on the gateway host.",
+              "Setup codes need a gateway URL this device can reach. If propai-sync qr says the gateway is only bound to loopback, rerun it with --public-url or set plugins.entries.\"device-pair\".config.publicUrl on the gateway host.",
           )
-          CommandBlock("androidassistant qr --public-url wss://gateway.example.com")
+          CommandBlock("propai-sync qr --public-url wss://gateway.example.com")
 
           if (inputMode == ConnectInputMode.SetupCode) {
             Text("Setup Code", style = mobileCaption1.copy(fontWeight = FontWeight.SemiBold), color = mobileTextSecondary)
@@ -426,8 +426,8 @@ private fun HintCard(title: String, body: String) {
   Surface(
     modifier = Modifier.fillMaxWidth(),
     shape = RoundedCornerShape(12.dp),
-    color = mobileAccentSoft,
-    border = BorderStroke(1.dp, Color(0xFFD5E2FA)),
+    color = mobileSurfaceStrong,
+    border = BorderStroke(1.dp, mobileBorderStrong),
   ) {
     Column(
       modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
@@ -448,10 +448,10 @@ private fun MethodChip(label: String, active: Boolean, onClick: () -> Unit) {
     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
     colors =
       ButtonDefaults.buttonColors(
-        containerColor = if (active) mobileAccent else mobileSurface,
-        contentColor = if (active) Color.White else mobileText,
+        containerColor = if (active) mobileAccent else mobileSurfaceStrong,
+        contentColor = if (active) Color(0xFF08111B) else mobileText,
       ),
-    border = BorderStroke(1.dp, if (active) Color(0xFF184DAF) else mobileBorderStrong),
+    border = BorderStroke(1.dp, if (active) mobileAccent.copy(alpha = 0.65f) else mobileBorderStrong),
   ) {
     Text(label, style = mobileCaption1.copy(fontWeight = FontWeight.Bold))
   }
@@ -465,7 +465,7 @@ private fun QuickFillChip(label: String, onClick: () -> Unit) {
     contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
     colors =
       ButtonDefaults.buttonColors(
-        containerColor = mobileAccentSoft,
+        containerColor = mobileSurfaceStrong,
         contentColor = mobileAccent,
       ),
     elevation = null,
@@ -507,8 +507,8 @@ private fun EndpointPreview(endpoint: String) {
 @Composable
 private fun outlinedColors() =
   OutlinedTextFieldDefaults.colors(
-    focusedContainerColor = mobileSurface,
-    unfocusedContainerColor = mobileSurface,
+    focusedContainerColor = mobileSurfaceStrong,
+    unfocusedContainerColor = mobileSurfaceStrong,
     focusedBorderColor = mobileAccent,
     unfocusedBorderColor = mobileBorder,
     focusedTextColor = mobileText,

@@ -8,10 +8,13 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import ai.androidassistant.app.automation.AutomationEngine
 import ai.androidassistant.app.chat.ChatController
+import ai.androidassistant.app.chat.ChatMemoryStore
 import ai.androidassistant.app.chat.ChatMessage
 import ai.androidassistant.app.chat.ChatPendingToolCall
 import ai.androidassistant.app.chat.ChatSessionEntry
 import ai.androidassistant.app.chat.OutgoingAttachment
+import ai.androidassistant.app.cloud.CloudChatMessage
+import ai.androidassistant.app.cloud.CloudLlmClient
 import ai.androidassistant.app.gateway.DeviceAuthStore
 import ai.androidassistant.app.gateway.DeviceIdentityStore
 import ai.androidassistant.app.gateway.GatewayDiscovery
@@ -20,9 +23,16 @@ import ai.androidassistant.app.gateway.GatewaySession
 import ai.androidassistant.app.gateway.probeGatewayTlsFingerprint
 import ai.androidassistant.app.node.*
 import ai.androidassistant.app.protocol.AndroidAssistantCanvasA2UIAction
+import ai.androidassistant.app.propai.PropAiAuthResult
+import ai.androidassistant.app.propai.PropAiControlClient
+import ai.androidassistant.app.propai.PropAiLicenseClient
+import ai.androidassistant.app.propai.PropAiLicenseStatus
+import ai.androidassistant.app.propai.PropAiWhatsappMessage
+import ai.androidassistant.app.voice.ConvaiVoiceManager
 import ai.androidassistant.app.voice.MicCaptureManager
 import ai.androidassistant.app.voice.TalkModeManager
 import ai.androidassistant.app.voice.VoiceConversationEntry
+import ai.androidassistant.app.voice.VoiceSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,30 +43,52 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
 class NodeRuntime(context: Context) {
   private val appContext = context.applicationContext
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+  private val cloudOnly = AppConfig.CLOUD_ONLY
+  private val localSessionMode = cloudOnly
 
   val prefs = SecurePrefs(appContext)
+  private val cloudClient = CloudLlmClient()
   private val deviceAuthStore = DeviceAuthStore(prefs)
   val canvas = CanvasController()
   val camera = CameraCaptureManager(appContext)
   val location = LocationCaptureManager(appContext)
   val sms = SmsManager(appContext)
   private val json = Json { ignoreUnknownKeys = true }
+  private val chatListeningStore = ChatListeningStore(appContext)
+  private val chatMemoryStore = ChatMemoryStore(appContext, json)
+  private val propAiControlClient = PropAiControlClient()
+  private val propAiLicenseClient = PropAiLicenseClient()
+
+  private val _propAiControlBusy = MutableStateFlow(false)
+  val propAiControlBusy: StateFlow<Boolean> = _propAiControlBusy.asStateFlow()
+  private val _propAiControlError = MutableStateFlow<String?>(null)
+  val propAiControlError: StateFlow<String?> = _propAiControlError.asStateFlow()
+  private val _propAiLicenseBusy = MutableStateFlow(false)
+  val propAiLicenseBusy: StateFlow<Boolean> = _propAiLicenseBusy.asStateFlow()
+  private val _propAiLicenseError = MutableStateFlow<String?>(null)
+  val propAiLicenseError: StateFlow<String?> = _propAiLicenseError.asStateFlow()
 
   private val externalAudioCaptureActive = MutableStateFlow(false)
 
-  private val discovery = GatewayDiscovery(appContext, scope = scope)
+  private val discovery = GatewayDiscovery(appContext, scope = scope, enabled = !localSessionMode)
   val gateways: StateFlow<List<GatewayEndpoint>> = discovery.gateways
   val discoveryStatusText: StateFlow<String> = discovery.statusText
 
@@ -171,12 +203,278 @@ class NodeRuntime(context: Context) {
     val fingerprintSha256: String,
   )
 
+  private fun assistantSystemPrompt(): String {
+    val tenantName = prefs.propAiControlTenantName.value.trim()
+    val tenantRole = prefs.propAiControlTenantRole.value.trim()
+    val tenantLine =
+      if (tenantName.isNotEmpty()) {
+        val roleSuffix = tenantRole.takeIf { it.isNotEmpty() }?.let { " ($it)" } ?: ""
+        "PropAi Sync account: $tenantName$roleSuffix."
+      } else {
+        "PropAi Sync account: not linked."
+      }
+    return "You are PropAi Sync, a general assistant focused on real estate and realtor workflows.\n" +
+      "$tenantLine\n" +
+      "Be concise, action oriented, and ask for missing details when needed."
+  }
+
+  private suspend fun generateAssistantResponse(prompt: String): String {
+    return generateAssistantResponse(messages = emptyList(), prompt = prompt)
+  }
+
+  private suspend fun generateAssistantResponse(
+    messages: List<ChatMessage>,
+    prompt: String,
+  ): String {
+    val cleaned = prompt.trim()
+    if (cleaned.isEmpty()) return ""
+    val chatContext = buildChatListeningContext(cleaned)
+    val cloudMessages = buildCloudMessages(messages)
+
+    val provider = prefs.cloudProvider.value
+    val (apiKey, modelOrAgent) =
+      when (provider) {
+        CloudProvider.OpenAI ->
+          prefs.openAiApiKey.value.trim() to
+            prefs.openAiModel.value.trim().ifBlank { provider.defaultModel }
+        CloudProvider.Anthropic ->
+          prefs.anthropicApiKey.value.trim() to
+            prefs.anthropicModel.value.trim().ifBlank { provider.defaultModel }
+        CloudProvider.Groq ->
+          prefs.groqApiKey.value.trim() to
+            prefs.groqModel.value.trim().ifBlank { provider.defaultModel }
+        CloudProvider.OpenRouter ->
+          prefs.openRouterApiKey.value.trim() to
+            prefs.openRouterModel.value.trim().ifBlank { provider.defaultModel }
+        CloudProvider.ElevenLabs ->
+          prefs.elevenLabsApiKey.value.trim() to
+            prefs.elevenLabsModel.value.trim().ifBlank { provider.defaultModel }
+      }
+
+    if (apiKey.isBlank()) {
+      return "${provider.label} is not configured. Add API key in Settings."
+    }
+    if (modelOrAgent.isBlank()) {
+      return "${provider.label} model is missing. Add it in Settings."
+    }
+
+    val timeoutMs =
+      when (provider) {
+        CloudProvider.OpenRouter -> 60_000L
+        else -> 45_000L
+      }
+    val cloudResult =
+      withTimeoutOrNull(timeoutMs) {
+        cloudClient.generateResponse(
+          provider = provider,
+          apiKey = apiKey,
+          model = modelOrAgent,
+          messages = cloudMessages.ifEmpty {
+            listOf(CloudChatMessage(role = "user", content = cleaned))
+          },
+          systemPrompt = assistantSystemPrompt().let { base ->
+            chatContext?.let { "$base\n\n$it" } ?: base
+          },
+        )
+      } ?: return "${provider.label} request timed out. Please try again."
+
+    return cloudResult.getOrElse { error ->
+      val message = error.message?.takeIf { it.isNotBlank() } ?: "Unknown error"
+      "${provider.label} error: $message"
+    }.takeIf { it.isNotBlank() }
+      ?: "${provider.label} response was empty."
+  }
+
+  private suspend fun buildChatListeningContext(prompt: String): String? {
+    if (!isChatListeningQuery(prompt)) return null
+    val filters = inferChatPackageFilters(prompt)
+    val recentMessages =
+      chatListeningStore.recentMessages(
+        limit = 40,
+        withinMs = 1000L * 60L * 60L * 24L,
+        packageFilters = filters,
+      )
+    val whatsappRemote =
+      if (filters.any { it.contains("whatsapp") }) {
+        loadPropAiWhatsappMessages(limit = 40, withinMs = 1000L * 60L * 60L * 24L)
+      } else {
+        emptyList()
+      }
+    val headerLines = mutableListOf<String>()
+    if (recentMessages.isNotEmpty()) {
+      headerLines +=
+        "Recent chat messages captured on this device (local-only). Use them only when relevant:"
+      headerLines += formatChatMessagesForPrompt(recentMessages)
+    }
+    if (whatsappRemote.isNotEmpty()) {
+      headerLines +=
+        "Recent WhatsApp messages from PropAi Sync (server-side Baileys). Use them only when relevant:"
+      headerLines += formatPropAiWhatsappMessagesForPrompt(whatsappRemote)
+    }
+    if (headerLines.isEmpty()) {
+      return "Recent chat messages (device + PropAi Sync). Use them only when relevant:\n- None captured yet."
+    }
+    return headerLines.joinToString("\n")
+  }
+
+  private suspend fun loadPropAiWhatsappMessages(
+    limit: Int,
+    withinMs: Long,
+  ): List<PropAiWhatsappMessage> {
+    val baseUrl = prefs.propAiControlBaseUrl.value.trim()
+    val token = prefs.propAiControlToken.value.trim()
+    if (baseUrl.isEmpty() || token.isEmpty()) return emptyList()
+    return propAiControlClient
+      .listWhatsappMessages(
+        baseUrl = baseUrl,
+        token = token,
+        limit = limit,
+        withinMs = withinMs,
+      )
+      .getOrElse { emptyList() }
+  }
+
+  private fun buildCloudMessages(messages: List<ChatMessage>): List<CloudChatMessage> {
+    if (messages.isEmpty()) return emptyList()
+    return messages.takeLast(40).mapNotNull { message ->
+      val role = message.role.lowercase(Locale.getDefault())
+      if (role != "user" && role != "assistant") return@mapNotNull null
+      val textParts =
+        message.content.mapNotNull { item ->
+          when {
+            item.type == "text" && !item.text.isNullOrBlank() -> item.text
+            item.type != "text" -> {
+              val name = item.fileName?.takeIf { it.isNotBlank() } ?: item.type
+              val mime = item.mimeType?.takeIf { it.isNotBlank() }
+              if (mime != null) {
+                "[Attachment: $name · $mime]"
+              } else {
+                "[Attachment: $name]"
+              }
+            }
+            else -> null
+          }
+        }
+      val merged = textParts.joinToString("\n").trim()
+      if (merged.isBlank()) return@mapNotNull null
+      CloudChatMessage(role = role, content = merged)
+    }
+  }
+
+  private fun isChatListeningQuery(prompt: String): Boolean {
+    val lower = prompt.lowercase(Locale.getDefault())
+    val keywords =
+      listOf(
+        "whatsapp",
+        "message",
+        "messages",
+        "chat",
+        "dm",
+        "text",
+        "texts",
+        "telegram",
+        "signal",
+        "slack",
+        "discord",
+        "imessage",
+        "sms",
+      )
+    return keywords.any { lower.contains(it) }
+  }
+
+  private fun inferChatPackageFilters(prompt: String): List<String> {
+    val lower = prompt.lowercase(Locale.getDefault())
+    val filters = mutableListOf<String>()
+    if (lower.contains("whatsapp")) {
+      filters += "whatsapp"
+    }
+    if (lower.contains("telegram")) {
+      filters += "telegram"
+    }
+    if (lower.contains("signal")) {
+      filters += "signal"
+    }
+    if (lower.contains("slack")) {
+      filters += "slack"
+    }
+    if (lower.contains("discord")) {
+      filters += "discord"
+    }
+    if (lower.contains("sms") || lower.contains("text")) {
+      filters += "messaging"
+      filters += "sms"
+    }
+    return filters
+  }
+
+  private fun formatChatMessagesForPrompt(messages: List<ChatListeningMessage>): String {
+    val formatter =
+      DateTimeFormatter.ofPattern("MMM d, HH:mm", Locale.getDefault())
+        .withZone(ZoneId.systemDefault())
+    val builder = StringBuilder()
+    var remaining = 3000
+    for (message in messages.sortedByDescending { it.timestampMs }) {
+      if (remaining <= 0) break
+      val timestamp = formatter.format(Instant.ofEpochMilli(message.timestampMs))
+      val appName = readableChatAppName(message.packageName)
+      val sender = message.sender?.trim().takeIf { !it.isNullOrBlank() } ?: "Unknown"
+      val conversation = message.conversation?.trim().takeIf { !it.isNullOrBlank() }
+      val convoSuffix = conversation?.let { " • $it" } ?: ""
+      val text = message.text.replace("\n", " ").trim().take(260)
+      val line = "- [$timestamp] ($appName$convoSuffix) $sender: $text"
+      if (line.length + 1 > remaining) break
+      builder.append(line).append("\n")
+      remaining -= line.length + 1
+    }
+    return builder.toString().trimEnd()
+  }
+
+  private fun formatPropAiWhatsappMessagesForPrompt(messages: List<PropAiWhatsappMessage>): String {
+    val formatter =
+      DateTimeFormatter.ofPattern("MMM d, HH:mm", Locale.getDefault())
+        .withZone(ZoneId.systemDefault())
+    val builder = StringBuilder()
+    var remaining = 3000
+    for (message in messages.sortedByDescending { it.timestampMs }) {
+      if (remaining <= 0) break
+      val timestamp = formatter.format(Instant.ofEpochMilli(message.timestampMs))
+      val sender = message.sender?.trim().takeIf { !it.isNullOrBlank() } ?: "Unknown"
+      val convo = message.chatId?.trim().takeIf { !it.isNullOrBlank() }
+      val convoSuffix = convo?.let { " • $it" } ?: ""
+      val text = message.text.replace("\n", " ").trim().take(260)
+      val line = "- [$timestamp] (WhatsApp$convoSuffix) $sender: $text"
+      if (line.length + 1 > remaining) break
+      builder.append(line).append("\n")
+      remaining -= line.length + 1
+    }
+    return builder.toString().trimEnd()
+  }
+
+  private fun readableChatAppName(packageName: String): String {
+    val lower = packageName.lowercase(Locale.getDefault())
+    return when {
+      "whatsapp" in lower -> "WhatsApp"
+      "telegram" in lower -> "Telegram"
+      "signal" in lower -> "Signal"
+      "slack" in lower -> "Slack"
+      "discord" in lower -> "Discord"
+      "messaging" in lower || lower.endsWith("sms") -> "Messages"
+      else -> packageName
+    }
+  }
+
   private val _isConnected = MutableStateFlow(false)
   val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
   private val _nodeConnected = MutableStateFlow(false)
   val nodeConnected: StateFlow<Boolean> = _nodeConnected.asStateFlow()
 
-  private val _statusText = MutableStateFlow("Offline")
+  private val _statusText =
+    MutableStateFlow(
+      when {
+        cloudOnly -> "Cloud: ${prefs.cloudProvider.value.label} (missing key)"
+        else -> "Offline"
+      },
+    )
   val statusText: StateFlow<String> = _statusText.asStateFlow()
 
   private val _pendingGatewayTrust = MutableStateFlow<GatewayTrustPrompt?>(null)
@@ -231,7 +529,7 @@ class NodeRuntime(context: Context) {
         _seamColorArgb.value = DEFAULT_SEAM_COLOR_ARGB
         applyMainSessionKey(mainSessionKey)
         updateStatus()
-        micCapture.onGatewayConnectionChanged(true)
+        voiceSession.onGatewayConnectionChanged(true)
         scope.launch {
           refreshBrandingFromGateway()
           if (voiceReplySpeakerLazy.isInitialized()) {
@@ -251,7 +549,7 @@ class NodeRuntime(context: Context) {
         chat.applyMainSessionKey(resolveMainSessionKey())
         chat.onDisconnected(message)
         updateStatus()
-        micCapture.onGatewayConnectionChanged(false)
+        voiceSession.onGatewayConnectionChanged(false)
       },
       onEvent = { event, payloadJson ->
         handleGatewayEvent(event, payloadJson)
@@ -323,6 +621,21 @@ class NodeRuntime(context: Context) {
       session = operatorSession,
       json = json,
       supportsChatSubscribe = false,
+      localMode = localSessionMode,
+      localResponder = { messages, prompt -> generateAssistantResponse(messages, prompt) },
+      memoryStore = chatMemoryStore,
+      onAssistantReply = { text ->
+        if (prefs.speakerEnabled.value) {
+          voiceReplySpeaker.speakAssistantReply(text)
+        }
+      },
+      onUserMessage = {
+        // New user turn should interrupt any active TTS.
+        talkMode.stopTts()
+        if (voiceReplySpeakerLazy.isInitialized()) {
+          voiceReplySpeaker.stopTts()
+        }
+      },
     )
   private val voiceReplySpeakerLazy: Lazy<TalkModeManager> = lazy {
     // Reuse the existing TalkMode speech engine (ElevenLabs + deterministic system-TTS fallback)
@@ -332,7 +645,7 @@ class NodeRuntime(context: Context) {
       scope = scope,
       session = operatorSession,
       supportsChatSubscribe = false,
-      isConnected = { operatorConnected },
+      isConnected = { localSessionMode || operatorConnected },
     ).also { speaker ->
       speaker.setPlaybackEnabled(prefs.speakerEnabled.value)
     }
@@ -340,62 +653,77 @@ class NodeRuntime(context: Context) {
   private val voiceReplySpeaker: TalkModeManager
     get() = voiceReplySpeakerLazy.value
 
-  private val micCapture: MicCaptureManager by lazy {
-    MicCaptureManager(
-      context = appContext,
-      scope = scope,
-      sendToGateway = { message, onRunIdKnown ->
-        val idempotencyKey = UUID.randomUUID().toString()
-        // Notify MicCaptureManager of the idempotency key *before* the network
-        // call so pendingRunId is set before any chat events can arrive.
-        onRunIdKnown(idempotencyKey)
-        val params =
-          buildJsonObject {
-            put("sessionKey", JsonPrimitive(resolveMainSessionKey()))
-            put("message", JsonPrimitive(message))
-            put("thinking", JsonPrimitive(chatThinkingLevel.value))
-            put("timeoutMs", JsonPrimitive(30_000))
-            put("idempotencyKey", JsonPrimitive(idempotencyKey))
+  private fun shouldUseConvaiVoice(): Boolean {
+    if (cloudOnly) return true
+    return prefs.llmMode.value == LlmMode.Cloud
+  }
+
+  private val voiceSession: VoiceSession by lazy {
+    if (shouldUseConvaiVoice()) {
+      ConvaiVoiceManager(
+        context = appContext,
+        scope = scope,
+        prefs = prefs,
+      )
+    } else {
+      MicCaptureManager(
+        context = appContext,
+        scope = scope,
+        sendToGateway = { message, onRunIdKnown ->
+          val idempotencyKey = UUID.randomUUID().toString()
+          // Notify MicCaptureManager of the idempotency key *before* the network
+          // call so pendingRunId is set before any chat events can arrive.
+          onRunIdKnown(idempotencyKey)
+          val params =
+            buildJsonObject {
+              put("sessionKey", JsonPrimitive(resolveMainSessionKey()))
+              put("message", JsonPrimitive(message))
+              put("thinking", JsonPrimitive(chatThinkingLevel.value))
+              put("timeoutMs", JsonPrimitive(30_000))
+              put("idempotencyKey", JsonPrimitive(idempotencyKey))
+            }
+          val response = operatorSession.request("chat.send", params.toString())
+          parseChatSendRunId(response) ?: idempotencyKey
+        },
+        localMode = localSessionMode,
+        localResponder = { prompt -> generateAssistantResponse(prompt) },
+        speakAssistantReply = { text ->
+          // Skip if TalkModeManager is handling TTS (ttsOnAllResponses) to avoid
+          // double-speaking the same assistant reply from both pipelines.
+          if (!talkMode.ttsOnAllResponses) {
+            voiceReplySpeaker.speakAssistantReply(text)
           }
-        val response = operatorSession.request("chat.send", params.toString())
-        parseChatSendRunId(response) ?: idempotencyKey
-      },
-      speakAssistantReply = { text ->
-        // Skip if TalkModeManager is handling TTS (ttsOnAllResponses) to avoid
-        // double-speaking the same assistant reply from both pipelines.
-        if (!talkMode.ttsOnAllResponses) {
-          voiceReplySpeaker.speakAssistantReply(text)
-        }
-      },
-    )
+        },
+      )
+    }
   }
 
   val micStatusText: StateFlow<String>
-    get() = micCapture.statusText
+    get() = voiceSession.statusText
 
   val micLiveTranscript: StateFlow<String?>
-    get() = micCapture.liveTranscript
+    get() = voiceSession.liveTranscript
 
   val micIsListening: StateFlow<Boolean>
-    get() = micCapture.isListening
+    get() = voiceSession.isListening
 
   val micEnabled: StateFlow<Boolean>
-    get() = micCapture.micEnabled
+    get() = voiceSession.micEnabled
 
   val micCooldown: StateFlow<Boolean>
-    get() = micCapture.micCooldown
+    get() = voiceSession.micCooldown
 
   val micQueuedMessages: StateFlow<List<String>>
-    get() = micCapture.queuedMessages
+    get() = voiceSession.queuedMessages
 
   val micConversation: StateFlow<List<VoiceConversationEntry>>
-    get() = micCapture.conversation
+    get() = voiceSession.conversation
 
   val micInputLevel: StateFlow<Float>
-    get() = micCapture.inputLevel
+    get() = voiceSession.inputLevel
 
   val micIsSending: StateFlow<Boolean>
-    get() = micCapture.isSending
+    get() = voiceSession.isSending
 
   private val talkMode: TalkModeManager by lazy {
     TalkModeManager(
@@ -403,8 +731,10 @@ class NodeRuntime(context: Context) {
       scope = scope,
       session = operatorSession,
       supportsChatSubscribe = true,
-      isConnected = { operatorConnected },
-    )
+      isConnected = { localSessionMode || operatorConnected },
+    ).also { manager ->
+      manager.setPlaybackEnabled(prefs.speakerEnabled.value)
+    }
   }
 
   private fun applyMainSessionKey(candidate: String?) {
@@ -416,7 +746,48 @@ class NodeRuntime(context: Context) {
     chat.applyMainSessionKey(trimmed)
   }
 
+  private fun applyPropAiAuth(auth: PropAiAuthResult, fallbackEmail: String) {
+    val token = auth.token.trim()
+    if (token.isNotEmpty()) {
+      prefs.setPropAiControlToken(token)
+    }
+    val email = auth.user?.email?.trim().orEmpty().ifEmpty { fallbackEmail.trim() }
+    if (email.isNotEmpty()) {
+      prefs.setPropAiControlEmail(email)
+    }
+    val userId = auth.user?.id?.trim().orEmpty()
+    if (userId.isNotEmpty()) {
+      prefs.setPropAiControlUserId(userId)
+    }
+
+    val tenant = auth.tenants.firstOrNull()
+    if (tenant != null) {
+      prefs.setPropAiControlTenant(tenant.id, tenant.name, tenant.role)
+    } else {
+      prefs.setPropAiControlTenant("", "", "")
+    }
+  }
+
+  private fun applyPropAiLicenseStatus(status: PropAiLicenseStatus) {
+    val activationToken = status.activationToken?.trim().orEmpty()
+    if (activationToken.isNotEmpty()) {
+      prefs.setPropAiActivationToken(activationToken)
+    }
+    prefs.setPropAiLicenseStatus(status)
+    _propAiLicenseError.value =
+      if (status.valid) {
+        null
+      } else {
+        status.message?.takeIf { it.isNotBlank() } ?: "License inactive."
+      }
+  }
+
   private fun updateStatus() {
+    if (localSessionMode) {
+      _isConnected.value = true
+      _nodeConnected.value = true
+      return
+    }
     _isConnected.value = operatorConnected
     val operator = operatorStatusText.trim()
     val node = nodeStatusText.trim()
@@ -510,6 +881,7 @@ class NodeRuntime(context: Context) {
 
   val instanceId: StateFlow<String> = prefs.instanceId
   val displayName: StateFlow<String> = prefs.displayName
+  val wakeWords: StateFlow<List<String>> = prefs.wakeWords
   val cameraEnabled: StateFlow<Boolean> = prefs.cameraEnabled
   val locationMode: StateFlow<LocationMode> = prefs.locationMode
   val locationPreciseEnabled: StateFlow<Boolean> = prefs.locationPreciseEnabled
@@ -518,11 +890,220 @@ class NodeRuntime(context: Context) {
   val manualHost: StateFlow<String> = prefs.manualHost
   val manualPort: StateFlow<Int> = prefs.manualPort
   val manualTls: StateFlow<Boolean> = prefs.manualTls
+  val chatListeningPackages: StateFlow<List<String>> = prefs.chatListeningPackages
+  val chatListeningConversationFilters: StateFlow<List<String>> = prefs.chatListeningConversationFilters
   val gatewayToken: StateFlow<String> = prefs.gatewayToken
   val onboardingCompleted: StateFlow<Boolean> = prefs.onboardingCompleted
+  val welcomeMessageSent: StateFlow<Boolean> = prefs.welcomeMessageSent
+  val llmMode: StateFlow<LlmMode> = prefs.llmMode
+  val cloudProvider: StateFlow<CloudProvider> = prefs.cloudProvider
+  val openAiApiKey: StateFlow<String> = prefs.openAiApiKey
+  val anthropicApiKey: StateFlow<String> = prefs.anthropicApiKey
+  val groqApiKey: StateFlow<String> = prefs.groqApiKey
+  val openRouterApiKey: StateFlow<String> = prefs.openRouterApiKey
+  val elevenLabsAgentId: StateFlow<String> = prefs.elevenLabsAgentId
+  val openAiModel: StateFlow<String> = prefs.openAiModel
+  val anthropicModel: StateFlow<String> = prefs.anthropicModel
+  val groqModel: StateFlow<String> = prefs.groqModel
+  val openRouterModel: StateFlow<String> = prefs.openRouterModel
+  val elevenLabsModel: StateFlow<String> = prefs.elevenLabsModel
+  val propAiControlBaseUrl: StateFlow<String> = prefs.propAiControlBaseUrl
+  val propAiControlToken: StateFlow<String> = prefs.propAiControlToken
+  val propAiControlEmail: StateFlow<String> = prefs.propAiControlEmail
+  val propAiControlUserId: StateFlow<String> = prefs.propAiControlUserId
+  val propAiControlTenantId: StateFlow<String> = prefs.propAiControlTenantId
+  val propAiControlTenantName: StateFlow<String> = prefs.propAiControlTenantName
+  val propAiControlTenantRole: StateFlow<String> = prefs.propAiControlTenantRole
+  val propAiLicenseBaseUrl: StateFlow<String> = prefs.propAiLicenseBaseUrl
+  val propAiActivationKey: StateFlow<String> = prefs.propAiActivationKey
+  val propAiActivationToken: StateFlow<String> = prefs.propAiActivationToken
+  val propAiLicenseStatus: StateFlow<PropAiLicenseStatus> = prefs.propAiLicenseStatus
   fun setGatewayToken(value: String) = prefs.setGatewayToken(value)
   fun setGatewayPassword(value: String) = prefs.setGatewayPassword(value)
   fun setOnboardingCompleted(value: Boolean) = prefs.setOnboardingCompleted(value)
+
+  fun showWelcomeMessageIfNeeded() {
+    if (!prefs.onboardingCompleted.value) return
+    if (prefs.welcomeMessageSent.value) return
+    if (chat.messages.value.isNotEmpty()) return
+    val welcomeMessage =
+      "Hi! I'm PropAI Sync — your AI assistant for real estate. I can help you:\n" +
+        "• Search and match properties\n" +
+        "• Handle client queries\n" +
+        "• Manage WhatsApp follow-ups\n\n" +
+        "What would you like to do first?"
+    chat.injectAssistantMessage(welcomeMessage)
+    prefs.setWelcomeMessageSent(true)
+  }
+  fun setLlmMode(mode: LlmMode) = prefs.setLlmMode(mode)
+  fun setCloudProvider(provider: CloudProvider) = prefs.setCloudProvider(provider)
+  fun setOpenAiApiKey(value: String) = prefs.setOpenAiApiKey(value)
+  fun setAnthropicApiKey(value: String) = prefs.setAnthropicApiKey(value)
+  fun setGroqApiKey(value: String) = prefs.setGroqApiKey(value)
+  fun setOpenRouterApiKey(value: String) = prefs.setOpenRouterApiKey(value)
+  fun setElevenLabsAgentId(value: String) = prefs.setElevenLabsAgentId(value)
+  fun setOpenAiModel(value: String) = prefs.setOpenAiModel(value)
+  fun setAnthropicModel(value: String) = prefs.setAnthropicModel(value)
+  fun setGroqModel(value: String) = prefs.setGroqModel(value)
+  fun setOpenRouterModel(value: String) = prefs.setOpenRouterModel(value)
+  fun setElevenLabsModel(value: String) = prefs.setElevenLabsModel(value)
+  fun setPropAiControlBaseUrl(value: String) = prefs.setPropAiControlBaseUrl(value)
+  fun setPropAiLicenseBaseUrl(value: String) = prefs.setPropAiLicenseBaseUrl(value)
+  fun setPropAiActivationKey(value: String) = prefs.setPropAiActivationKey(value)
+
+  fun loginPropAi(email: String, password: String) {
+    val baseUrl = prefs.propAiControlBaseUrl.value.trim()
+    val normalizedEmail = email.trim()
+    if (baseUrl.isEmpty()) {
+      _propAiControlError.value = "Set the PropAi Control API URL."
+      return
+    }
+    if (normalizedEmail.isEmpty() || password.isBlank()) {
+      _propAiControlError.value = "Email and password are required."
+      return
+    }
+    _propAiControlBusy.value = true
+    _propAiControlError.value = null
+    scope.launch {
+      val result = propAiControlClient.login(baseUrl, normalizedEmail, password)
+      _propAiControlBusy.value = false
+      result
+        .onSuccess { auth ->
+          applyPropAiAuth(auth, normalizedEmail)
+          _propAiControlError.value = null
+        }
+        .onFailure { error ->
+          _propAiControlError.value = error.message ?: "Login failed."
+        }
+    }
+  }
+
+  fun registerPropAi(email: String, password: String, tenantName: String) {
+    val baseUrl = prefs.propAiControlBaseUrl.value.trim()
+    val normalizedEmail = email.trim()
+    val normalizedTenant = tenantName.trim()
+    if (baseUrl.isEmpty()) {
+      _propAiControlError.value = "Set the PropAi Control API URL."
+      return
+    }
+    if (normalizedEmail.isEmpty() || password.isBlank() || normalizedTenant.isEmpty()) {
+      _propAiControlError.value = "Email, password, and tenant name are required."
+      return
+    }
+    _propAiControlBusy.value = true
+    _propAiControlError.value = null
+    scope.launch {
+      val result = propAiControlClient.register(baseUrl, normalizedEmail, password, normalizedTenant)
+      _propAiControlBusy.value = false
+      result
+        .onSuccess { auth ->
+          applyPropAiAuth(auth, normalizedEmail)
+          _propAiControlError.value = null
+        }
+        .onFailure { error ->
+          _propAiControlError.value = error.message ?: "Registration failed."
+        }
+    }
+  }
+
+  fun refreshPropAiProfile() {
+    val baseUrl = prefs.propAiControlBaseUrl.value.trim()
+    val token = prefs.propAiControlToken.value.trim()
+    if (baseUrl.isEmpty() || token.isEmpty()) return
+    _propAiControlBusy.value = true
+    _propAiControlError.value = null
+    scope.launch {
+      val result = propAiControlClient.me(baseUrl, token)
+      _propAiControlBusy.value = false
+      result
+        .onSuccess { auth ->
+          applyPropAiAuth(auth, prefs.propAiControlEmail.value.trim())
+          _propAiControlError.value = null
+        }
+        .onFailure { error ->
+          _propAiControlError.value = error.message ?: "Failed to refresh profile."
+        }
+    }
+  }
+
+  fun logoutPropAi() {
+    prefs.clearPropAiControl()
+    _propAiControlError.value = null
+  }
+
+  fun activatePropAiLicense() {
+    val baseUrl = prefs.propAiLicenseBaseUrl.value.trim()
+    val activationKey = prefs.propAiActivationKey.value.trim()
+    if (baseUrl.isEmpty()) {
+      _propAiLicenseError.value = "Set the PropAi License API URL."
+      return
+    }
+    if (activationKey.isEmpty()) {
+      _propAiLicenseError.value = "Enter an activation key."
+      return
+    }
+    _propAiLicenseBusy.value = true
+    _propAiLicenseError.value = null
+    val deviceId = prefs.instanceId.value
+    val deviceName = DeviceNames.bestDefaultNodeName(appContext)
+    val appVersion = BuildConfig.VERSION_NAME
+    scope.launch {
+      val result =
+        propAiLicenseClient.activate(
+          baseUrl = baseUrl,
+          activationKey = activationKey,
+          deviceId = deviceId,
+          appVersion = appVersion,
+          deviceName = deviceName,
+        )
+      _propAiLicenseBusy.value = false
+      result
+        .onSuccess { status ->
+          applyPropAiLicenseStatus(status)
+        }
+        .onFailure { error ->
+          _propAiLicenseError.value = error.message ?: "Activation failed."
+        }
+    }
+  }
+
+  fun refreshPropAiLicense() {
+    val baseUrl = prefs.propAiLicenseBaseUrl.value.trim()
+    val activationToken = prefs.propAiActivationToken.value.trim()
+    if (baseUrl.isEmpty() || activationToken.isEmpty()) {
+      _propAiLicenseError.value = "Activation token missing. Activate first."
+      return
+    }
+    _propAiLicenseBusy.value = true
+    _propAiLicenseError.value = null
+    val deviceId = prefs.instanceId.value
+    val deviceName = DeviceNames.bestDefaultNodeName(appContext)
+    val appVersion = BuildConfig.VERSION_NAME
+    scope.launch {
+      val result =
+        propAiLicenseClient.refresh(
+          baseUrl = baseUrl,
+          activationToken = activationToken,
+          deviceId = deviceId,
+          appVersion = appVersion,
+          deviceName = deviceName,
+        )
+      _propAiLicenseBusy.value = false
+      result
+        .onSuccess { status ->
+          applyPropAiLicenseStatus(status)
+        }
+        .onFailure { error ->
+          _propAiLicenseError.value = error.message ?: "License refresh failed."
+        }
+    }
+  }
+
+  fun clearPropAiLicense() {
+    prefs.setPropAiActivationToken("")
+    prefs.clearPropAiLicenseStatus()
+    _propAiLicenseError.value = null
+  }
   val lastDiscoveredStableId: StateFlow<String> = prefs.lastDiscoveredStableId
   val canvasDebugStatusEnabled: StateFlow<Boolean> = prefs.canvasDebugStatusEnabled
 
@@ -540,20 +1121,82 @@ class NodeRuntime(context: Context) {
   val pendingRunCount: StateFlow<Int> = chat.pendingRunCount
 
   init {
+    if (localSessionMode) {
+      _isConnected.value = true
+      _nodeConnected.value = true
+      voiceSession.onGatewayConnectionChanged(true)
+      if (cloudOnly) {
+        scope.launch {
+          combine(
+            prefs.cloudProvider.map { it as Any? },
+            prefs.openAiApiKey.map { it as Any? },
+            prefs.openAiModel.map { it as Any? },
+            prefs.anthropicApiKey.map { it as Any? },
+            prefs.anthropicModel.map { it as Any? },
+            prefs.groqApiKey.map { it as Any? },
+            prefs.groqModel.map { it as Any? },
+            prefs.openRouterApiKey.map { it as Any? },
+            prefs.openRouterModel.map { it as Any? },
+            prefs.elevenLabsApiKey.map { it as Any? },
+            prefs.elevenLabsModel.map { it as Any? },
+            prefs.propAiLicenseStatus.map { it as Any? },
+            prefs.propAiActivationToken.map { it as Any? },
+          ) { values ->
+            val provider = values[0] as CloudProvider
+            val openAiKey = values[1] as String
+            val openAiModel = values[2] as String
+            val anthropicKey = values[3] as String
+            val anthropicModel = values[4] as String
+            val groqKey = values[5] as String
+            val groqModel = values[6] as String
+            val openRouterKey = values[7] as String
+            val openRouterModel = values[8] as String
+            val elevenLabsKey = values[9] as String
+            val elevenLabsModel = values[10] as String
+            val propAiStatus = values[11] as PropAiLicenseStatus
+            val propAiActivationToken = values[12] as String
+            val (key, model) =
+              when (provider) {
+                CloudProvider.OpenAI -> openAiKey to openAiModel
+                CloudProvider.Anthropic -> anthropicKey to anthropicModel
+                CloudProvider.Groq -> groqKey to groqModel
+                CloudProvider.OpenRouter -> openRouterKey to openRouterModel
+                CloudProvider.ElevenLabs -> elevenLabsKey to elevenLabsModel
+              }
+            val propAiLabel =
+              when {
+                propAiActivationToken.trim().isEmpty() && !propAiStatus.valid -> "PropAi: Unlinked"
+                propAiStatus.valid ->
+                  "PropAi: ${propAiStatus.plan ?: propAiStatus.status ?: "Active"}"
+                else -> "PropAi: ${propAiStatus.status ?: "Inactive"}"
+              }
+            when {
+              key.trim().isBlank() -> "Cloud: ${provider.label} (missing key) · $propAiLabel"
+              model.trim().isBlank() -> "Cloud: ${provider.label} (missing model) · $propAiLabel"
+              else -> "Cloud: ${provider.label} · $propAiLabel"
+            }
+          }.collect { status ->
+            _statusText.value = status
+          }
+        }
+      }
+    }
+
     if (prefs.voiceWakeMode.value != VoiceWakeMode.Off) {
       prefs.setVoiceWakeMode(VoiceWakeMode.Off)
     }
 
-    scope.launch {
-      prefs.loadGatewayToken()
+    if (!localSessionMode) {
+      scope.launch {
+        prefs.loadGatewayToken()
+      }
     }
 
     scope.launch {
       prefs.talkEnabled.collect { enabled ->
-        // MicCaptureManager handles STT + send to gateway.
-        // TalkModeManager plays TTS on assistant responses.
-        micCapture.setMicEnabled(enabled)
-        if (enabled) {
+        // Voice session handles STT + send to gateway or ConvAI streaming.
+        voiceSession.setMicEnabled(enabled)
+        if (!localSessionMode && enabled) {
           // Mic on = user is on voice screen and wants TTS responses.
           talkMode.ttsOnAllResponses = true
           scope.launch { talkMode.ensureChatSubscribed() }
@@ -562,45 +1205,58 @@ class NodeRuntime(context: Context) {
       }
     }
 
-    scope.launch(Dispatchers.Default) {
-      gateways.collect { list ->
-        if (list.isNotEmpty()) {
-          // Security: don't let an unauthenticated discovery feed continuously steer autoconnect.
-          // UX parity with iOS: only set once when unset.
-          if (lastDiscoveredStableId.value.trim().isEmpty()) {
-            prefs.setLastDiscoveredStableId(list.first().stableId)
+    scope.launch {
+      val token = prefs.propAiControlToken.value.trim()
+      if (token.isNotEmpty()) {
+        refreshPropAiProfile()
+      }
+      val activationToken = prefs.propAiActivationToken.value.trim()
+      val licenseUrl = prefs.propAiLicenseBaseUrl.value.trim()
+      if (activationToken.isNotEmpty() && licenseUrl.isNotEmpty()) {
+        refreshPropAiLicense()
+      }
+    }
+
+    if (!localSessionMode) {
+      scope.launch(Dispatchers.Default) {
+        gateways.collect { list ->
+          if (list.isNotEmpty()) {
+            // Security: don't let an unauthenticated discovery feed continuously steer autoconnect.
+            // UX parity with iOS: only set once when unset.
+            if (lastDiscoveredStableId.value.trim().isEmpty()) {
+              prefs.setLastDiscoveredStableId(list.first().stableId)
+            }
           }
-        }
+          if (didAutoConnect) return@collect
+          if (_isConnected.value) return@collect
 
-        if (didAutoConnect) return@collect
-        if (_isConnected.value) return@collect
+          if (manualEnabled.value) {
+            val host = manualHost.value.trim()
+            val port = manualPort.value
+            if (host.isNotEmpty() && port in 1..65535) {
+              // Security: autoconnect only to previously trusted gateways (stored TLS pin).
+              if (!manualTls.value) return@collect
+              val stableId = GatewayEndpoint.manual(host = host, port = port).stableId
+              val storedFingerprint = prefs.loadGatewayTlsFingerprint(stableId)?.trim().orEmpty()
+              if (storedFingerprint.isEmpty()) return@collect
 
-        if (manualEnabled.value) {
-          val host = manualHost.value.trim()
-          val port = manualPort.value
-          if (host.isNotEmpty() && port in 1..65535) {
-            // Security: autoconnect only to previously trusted gateways (stored TLS pin).
-            if (!manualTls.value) return@collect
-            val stableId = GatewayEndpoint.manual(host = host, port = port).stableId
-            val storedFingerprint = prefs.loadGatewayTlsFingerprint(stableId)?.trim().orEmpty()
-            if (storedFingerprint.isEmpty()) return@collect
-
-            didAutoConnect = true
-            connect(GatewayEndpoint.manual(host = host, port = port))
+              didAutoConnect = true
+              connect(GatewayEndpoint.manual(host = host, port = port))
+            }
+            return@collect
           }
-          return@collect
+
+          val targetStableId = lastDiscoveredStableId.value.trim()
+          if (targetStableId.isEmpty()) return@collect
+          val target = list.firstOrNull { it.stableId == targetStableId } ?: return@collect
+
+          // Security: autoconnect only to previously trusted gateways (stored TLS pin).
+          val storedFingerprint = prefs.loadGatewayTlsFingerprint(target.stableId)?.trim().orEmpty()
+          if (storedFingerprint.isEmpty()) return@collect
+
+          didAutoConnect = true
+          connect(target)
         }
-
-        val targetStableId = lastDiscoveredStableId.value.trim()
-        if (targetStableId.isEmpty()) return@collect
-        val target = list.firstOrNull { it.stableId == targetStableId } ?: return@collect
-
-        // Security: autoconnect only to previously trusted gateways (stored TLS pin).
-        val storedFingerprint = prefs.loadGatewayTlsFingerprint(target.stableId)?.trim().orEmpty()
-        if (storedFingerprint.isEmpty()) return@collect
-
-        didAutoConnect = true
-        connect(target)
       }
     }
 
@@ -630,6 +1286,10 @@ class NodeRuntime(context: Context) {
 
   fun setDisplayName(value: String) {
     prefs.setDisplayName(value)
+  }
+
+  fun setWakeWords(words: List<String>) {
+    prefs.setWakeWords(words)
   }
 
   fun setCameraEnabled(value: Boolean) {
@@ -664,6 +1324,14 @@ class NodeRuntime(context: Context) {
     prefs.setManualTls(value)
   }
 
+  fun setChatListeningPackages(values: List<String>) {
+    prefs.setChatListeningPackages(values)
+  }
+
+  fun setChatListeningConversationFilters(values: List<String>) {
+    prefs.setChatListeningConversationFilters(values)
+  }
+
   fun setCanvasDebugStatusEnabled(value: Boolean) {
     prefs.setCanvasDebugStatusEnabled(value)
   }
@@ -680,10 +1348,12 @@ class NodeRuntime(context: Context) {
     if (value) {
       // Tapping mic on interrupts any active TTS (barge-in)
       talkMode.stopTts()
-      talkMode.ttsOnAllResponses = true
-      scope.launch { talkMode.ensureChatSubscribed() }
+      if (!localSessionMode) {
+        talkMode.ttsOnAllResponses = true
+        scope.launch { talkMode.ensureChatSubscribed() }
+      }
     }
-    micCapture.setMicEnabled(value)
+    voiceSession.setMicEnabled(value)
     externalAudioCaptureActive.value = value
   }
 
@@ -724,12 +1394,13 @@ class NodeRuntime(context: Context) {
   private fun stopActiveVoiceSession() {
     talkMode.ttsOnAllResponses = false
     talkMode.stopTts()
-    micCapture.setMicEnabled(false)
+    voiceSession.setMicEnabled(false)
     prefs.setTalkEnabled(false)
     externalAudioCaptureActive.value = false
   }
 
   fun refreshGatewayConnection() {
+    if (localSessionMode) return
     val endpoint =
       connectedEndpoint ?: run {
         _statusText.value = "Failed: no cached gateway endpoint"
@@ -747,6 +1418,7 @@ class NodeRuntime(context: Context) {
   }
 
   fun connect(endpoint: GatewayEndpoint) {
+    if (localSessionMode) return
     val tls = connectionManager.resolveTlsParams(endpoint)
     if (tls?.required == true && tls.expectedFingerprint.isNullOrBlank()) {
       // First-time TLS: capture fingerprint, ask user to verify out-of-band, then store and connect.
@@ -772,6 +1444,7 @@ class NodeRuntime(context: Context) {
   }
 
   fun acceptGatewayTrustPrompt() {
+    if (localSessionMode) return
     val prompt = _pendingGatewayTrust.value ?: return
     _pendingGatewayTrust.value = null
     prefs.saveGatewayTlsFingerprint(prompt.endpoint.stableId, prompt.fingerprintSha256)
@@ -779,6 +1452,7 @@ class NodeRuntime(context: Context) {
   }
 
   fun declineGatewayTrustPrompt() {
+    if (localSessionMode) return
     _pendingGatewayTrust.value = null
     _statusText.value = "Offline"
   }
@@ -791,6 +1465,7 @@ class NodeRuntime(context: Context) {
   }
 
   fun connectManual() {
+    if (localSessionMode) return
     val host = manualHost.value.trim()
     val port = manualPort.value
     if (host.isEmpty() || port <= 0 || port > 65535) {
@@ -801,6 +1476,7 @@ class NodeRuntime(context: Context) {
   }
 
   fun disconnect() {
+    if (localSessionMode) return
     connectedEndpoint = null
     _pendingGatewayTrust.value = null
     operatorSession.disconnect()
@@ -809,6 +1485,7 @@ class NodeRuntime(context: Context) {
 
   fun handleCanvasA2UIActionFromWebView(payloadJson: String) {
     scope.launch {
+      if (localSessionMode) return@launch
       val trimmed = payloadJson.trim()
       if (trimmed.isEmpty()) return@launch
 
@@ -909,7 +1586,7 @@ class NodeRuntime(context: Context) {
   }
 
   private fun handleGatewayEvent(event: String, payloadJson: String?) {
-    micCapture.handleGatewayEvent(event, payloadJson)
+    voiceSession.handleGatewayEvent(event, payloadJson)
     talkMode.handleGatewayEvent(event, payloadJson)
     chat.handleGatewayEvent(event, payloadJson)
   }

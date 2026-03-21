@@ -7,6 +7,7 @@ import android.content.SharedPreferences
 import androidx.core.content.edit
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import ai.androidassistant.app.propai.PropAiLicenseStatus
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.json.Json
@@ -17,14 +18,53 @@ import java.util.UUID
 
 class SecurePrefs(context: Context) {
   companion object {
-    val defaultWakeWords: List<String> = listOf("androidassistant", "claude")
+    val defaultWakeWords: List<String> = listOf("propai", "hey propai", "okay propai")
     private const val displayNameKey = "node.displayName"
     private const val locationModeKey = "location.enabledMode"
     private const val voiceWakeModeKey = "voiceWake.mode"
+    private const val chatListeningPackagesKey = "notifications.chatListening.packages"
+    private const val chatListeningConversationFiltersKey = "notifications.chatListening.conversations"
     private const val elevenLabsApiKeyKey = "voice.elevenlabs.apiKey"
     private const val elevenLabsVoiceIdKey = "voice.elevenlabs.voiceId"
+    private const val llmModeKey = "llm.mode"
+    private const val llmProviderKey = "llm.provider"
+    private const val llmOpenAiApiKeyKey = "llm.openai.apiKey"
+    private const val llmAnthropicApiKeyKey = "llm.anthropic.apiKey"
+    private const val llmGroqApiKeyKey = "llm.groq.apiKey"
+    private const val llmOpenRouterApiKeyKey = "llm.openrouter.apiKey"
+    private const val llmElevenLabsAgentIdKey = "llm.elevenlabs.agentId"
+    private const val llmOpenAiModelKey = "llm.openai.model"
+    private const val llmAnthropicModelKey = "llm.anthropic.model"
+    private const val llmGroqModelKey = "llm.groq.model"
+    private const val llmOpenRouterModelKey = "llm.openrouter.model"
+    private const val llmElevenLabsModelKey = "llm.elevenlabs.model"
+    private const val propAiControlBaseUrlKey = "propai.control.baseUrl"
+    private const val propAiControlTokenKey = "propai.control.token"
+    private const val propAiControlEmailKey = "propai.control.email"
+    private const val propAiControlUserIdKey = "propai.control.userId"
+    private const val propAiControlTenantIdKey = "propai.control.tenantId"
+    private const val propAiControlTenantNameKey = "propai.control.tenantName"
+    private const val propAiControlTenantRoleKey = "propai.control.tenantRole"
+    private const val propAiLicenseBaseUrlKey = "propai.license.baseUrl"
+    private const val propAiLicenseActivationKeyKey = "propai.license.activationKey"
+    private const val propAiLicenseActivationTokenKey = "propai.license.activationToken"
+    private const val propAiLicenseValidKey = "propai.license.valid"
+    private const val propAiLicenseStatusKey = "propai.license.status"
+    private const val propAiLicensePlanKey = "propai.license.plan"
+    private const val propAiLicenseEntitlementsKey = "propai.license.entitlements"
+    private const val propAiLicenseExpiresAtKey = "propai.license.expiresAt"
+    private const val propAiLicenseGraceUntilKey = "propai.license.graceUntil"
+    private const val propAiLicenseRefreshAtKey = "propai.license.refreshAt"
+    private const val propAiLicenseDeviceLimitKey = "propai.license.deviceLimit"
+    private const val propAiLicenseDevicesUsedKey = "propai.license.devicesUsed"
+    private const val propAiLicenseMessageKey = "propai.license.message"
+    private const val propAiLicenseCodeKey = "propai.license.code"
+    private const val propAiLicenseLastValidatedKey = "propai.license.lastValidatedAt"
+    private const val onboardingWelcomeSentKey = "onboarding.welcomeSent"
     private const val plainPrefsName = "androidassistant.node"
     private const val securePrefsName = "androidassistant.node.secure"
+    private const val defaultPropAiControlBaseUrl = "https://propai-control.up.railway.app"
+    private const val defaultPropAiLicenseBaseUrl = "https://propailicense.up.railway.app"
   }
 
   private val appContext = context.applicationContext
@@ -82,6 +122,10 @@ class SecurePrefs(context: Context) {
     MutableStateFlow(plainPrefs.getBoolean("onboarding.completed", false))
   val onboardingCompleted: StateFlow<Boolean> = _onboardingCompleted
 
+  private val _welcomeMessageSent =
+    MutableStateFlow(plainPrefs.getBoolean(onboardingWelcomeSentKey, false))
+  val welcomeMessageSent: StateFlow<Boolean> = _welcomeMessageSent
+
   private val _lastDiscoveredStableId =
     MutableStateFlow(
       plainPrefs.getString("gateway.lastDiscoveredStableID", "") ?: "",
@@ -98,10 +142,17 @@ class SecurePrefs(context: Context) {
   private val _voiceWakeMode = MutableStateFlow(loadVoiceWakeMode())
   val voiceWakeMode: StateFlow<VoiceWakeMode> = _voiceWakeMode
 
+  private val _chatListeningPackages = MutableStateFlow(loadChatListeningPackages())
+  val chatListeningPackages: StateFlow<List<String>> = _chatListeningPackages
+
+  private val _chatListeningConversationFilters =
+    MutableStateFlow(loadChatListeningConversationFilters())
+  val chatListeningConversationFilters: StateFlow<List<String>> = _chatListeningConversationFilters
+
   private val _talkEnabled = MutableStateFlow(plainPrefs.getBoolean("talk.enabled", false))
   val talkEnabled: StateFlow<Boolean> = _talkEnabled
 
-  private val _speakerEnabled = MutableStateFlow(plainPrefs.getBoolean("voice.speakerEnabled", true))
+  private val _speakerEnabled = MutableStateFlow(plainPrefs.getBoolean("voice.speakerEnabled", false))
   val speakerEnabled: StateFlow<Boolean> = _speakerEnabled
 
   private val _elevenLabsApiKey =
@@ -111,6 +162,108 @@ class SecurePrefs(context: Context) {
   private val _elevenLabsVoiceId =
     MutableStateFlow(securePrefs.getString(elevenLabsVoiceIdKey, "") ?: "")
   val elevenLabsVoiceId: StateFlow<String> = _elevenLabsVoiceId
+
+  private val _llmMode = MutableStateFlow(loadLlmMode())
+  val llmMode: StateFlow<LlmMode> = _llmMode
+
+  private val _cloudProvider = MutableStateFlow(loadCloudProvider())
+  val cloudProvider: StateFlow<CloudProvider> = _cloudProvider
+
+  private val _openAiApiKey =
+    MutableStateFlow(securePrefs.getString(llmOpenAiApiKeyKey, "") ?: "")
+  val openAiApiKey: StateFlow<String> = _openAiApiKey
+
+  private val _anthropicApiKey =
+    MutableStateFlow(securePrefs.getString(llmAnthropicApiKeyKey, "") ?: "")
+  val anthropicApiKey: StateFlow<String> = _anthropicApiKey
+
+  private val _groqApiKey =
+    MutableStateFlow(securePrefs.getString(llmGroqApiKeyKey, "") ?: "")
+  val groqApiKey: StateFlow<String> = _groqApiKey
+
+  private val _openRouterApiKey =
+    MutableStateFlow(securePrefs.getString(llmOpenRouterApiKeyKey, "") ?: "")
+  val openRouterApiKey: StateFlow<String> = _openRouterApiKey
+
+  private val _elevenLabsAgentId =
+    MutableStateFlow(plainPrefs.getString(llmElevenLabsAgentIdKey, "") ?: "")
+  val elevenLabsAgentId: StateFlow<String> = _elevenLabsAgentId
+
+  private val _openAiModel =
+    MutableStateFlow(
+      plainPrefs.getString(llmOpenAiModelKey, CloudProvider.OpenAI.defaultModel)
+        ?: CloudProvider.OpenAI.defaultModel,
+    )
+  val openAiModel: StateFlow<String> = _openAiModel
+
+  private val _anthropicModel =
+    MutableStateFlow(
+      plainPrefs.getString(llmAnthropicModelKey, CloudProvider.Anthropic.defaultModel)
+        ?: CloudProvider.Anthropic.defaultModel,
+    )
+  val anthropicModel: StateFlow<String> = _anthropicModel
+
+  private val _groqModel =
+    MutableStateFlow(
+      plainPrefs.getString(llmGroqModelKey, CloudProvider.Groq.defaultModel)
+        ?: CloudProvider.Groq.defaultModel,
+    )
+  val groqModel: StateFlow<String> = _groqModel
+
+  private val _openRouterModel =
+    MutableStateFlow(
+      plainPrefs.getString(llmOpenRouterModelKey, CloudProvider.OpenRouter.defaultModel)
+        ?: CloudProvider.OpenRouter.defaultModel,
+    )
+  val openRouterModel: StateFlow<String> = _openRouterModel
+
+  private val _elevenLabsModel =
+    MutableStateFlow(
+      plainPrefs.getString(llmElevenLabsModelKey, CloudProvider.ElevenLabs.defaultModel)
+        ?: CloudProvider.ElevenLabs.defaultModel,
+    )
+  val elevenLabsModel: StateFlow<String> = _elevenLabsModel
+
+  private val _propAiControlBaseUrl = MutableStateFlow(loadPropAiControlBaseUrl())
+  val propAiControlBaseUrl: StateFlow<String> = _propAiControlBaseUrl
+
+  private val _propAiControlToken =
+    MutableStateFlow(securePrefs.getString(propAiControlTokenKey, "") ?: "")
+  val propAiControlToken: StateFlow<String> = _propAiControlToken
+
+  private val _propAiControlEmail =
+    MutableStateFlow(plainPrefs.getString(propAiControlEmailKey, "") ?: "")
+  val propAiControlEmail: StateFlow<String> = _propAiControlEmail
+
+  private val _propAiControlUserId =
+    MutableStateFlow(plainPrefs.getString(propAiControlUserIdKey, "") ?: "")
+  val propAiControlUserId: StateFlow<String> = _propAiControlUserId
+
+  private val _propAiControlTenantId =
+    MutableStateFlow(plainPrefs.getString(propAiControlTenantIdKey, "") ?: "")
+  val propAiControlTenantId: StateFlow<String> = _propAiControlTenantId
+
+  private val _propAiControlTenantName =
+    MutableStateFlow(plainPrefs.getString(propAiControlTenantNameKey, "") ?: "")
+  val propAiControlTenantName: StateFlow<String> = _propAiControlTenantName
+
+  private val _propAiControlTenantRole =
+    MutableStateFlow(plainPrefs.getString(propAiControlTenantRoleKey, "") ?: "")
+  val propAiControlTenantRole: StateFlow<String> = _propAiControlTenantRole
+
+  private val _propAiLicenseBaseUrl = MutableStateFlow(loadPropAiLicenseBaseUrl())
+  val propAiLicenseBaseUrl: StateFlow<String> = _propAiLicenseBaseUrl
+
+  private val _propAiActivationKey =
+    MutableStateFlow(securePrefs.getString(propAiLicenseActivationKeyKey, "") ?: "")
+  val propAiActivationKey: StateFlow<String> = _propAiActivationKey
+
+  private val _propAiActivationToken =
+    MutableStateFlow(securePrefs.getString(propAiLicenseActivationTokenKey, "") ?: "")
+  val propAiActivationToken: StateFlow<String> = _propAiActivationToken
+
+  private val _propAiLicenseStatus = MutableStateFlow(loadPropAiLicenseStatus())
+  val propAiLicenseStatus: StateFlow<PropAiLicenseStatus> = _propAiLicenseStatus
 
   fun setLastDiscoveredStableId(value: String) {
     val trimmed = value.trim()
@@ -178,6 +331,11 @@ class SecurePrefs(context: Context) {
   fun setOnboardingCompleted(value: Boolean) {
     plainPrefs.edit { putBoolean("onboarding.completed", value) }
     _onboardingCompleted.value = value
+  }
+
+  fun setWelcomeMessageSent(value: Boolean) {
+    plainPrefs.edit { putBoolean(onboardingWelcomeSentKey, value) }
+    _welcomeMessageSent.value = value
   }
 
   fun setCanvasDebugStatusEnabled(value: Boolean) {
@@ -256,10 +414,21 @@ class SecurePrefs(context: Context) {
 
   private fun loadOrMigrateDisplayName(context: Context): String {
     val existing = plainPrefs.getString(displayNameKey, null)?.trim().orEmpty()
-    if (existing.isNotEmpty() && existing != "Android Node") return existing
+    val normalized = existing.lowercase()
+    val legacyNames =
+      setOf(
+        "androidassistant",
+        "android assistant",
+        "androidassistant node",
+        "android assistant node",
+        "androidassistant app",
+        "android assistant app",
+        "android node",
+        "archon",
+      )
+    if (existing.isNotEmpty() && normalized !in legacyNames && normalized != "propai sync") return existing
 
-    val candidate = DeviceNames.bestDefaultNodeName(context).trim()
-    val resolved = candidate.ifEmpty { "Android Node" }
+    val resolved = "PropAi Sync"
 
     plainPrefs.edit { putString(displayNameKey, resolved) }
     return resolved
@@ -276,6 +445,20 @@ class SecurePrefs(context: Context) {
   fun setVoiceWakeMode(mode: VoiceWakeMode) {
     plainPrefs.edit { putString(voiceWakeModeKey, mode.rawValue) }
     _voiceWakeMode.value = mode
+  }
+
+  fun setChatListeningPackages(values: List<String>) {
+    val sanitized = sanitizeChatListeningPackages(values)
+    val encoded = JsonArray(sanitized.map { JsonPrimitive(it) }).toString()
+    plainPrefs.edit { putString(chatListeningPackagesKey, encoded) }
+    _chatListeningPackages.value = sanitized
+  }
+
+  fun setChatListeningConversationFilters(values: List<String>) {
+    val sanitized = sanitizeChatListeningConversationFilters(values)
+    val encoded = JsonArray(sanitized.map { JsonPrimitive(it) }).toString()
+    plainPrefs.edit { putString(chatListeningConversationFiltersKey, encoded) }
+    _chatListeningConversationFilters.value = sanitized
   }
 
   fun setTalkEnabled(value: Boolean) {
@@ -300,6 +483,187 @@ class SecurePrefs(context: Context) {
     _elevenLabsVoiceId.value = trimmed
   }
 
+  fun setLlmMode(mode: LlmMode) {
+    plainPrefs.edit { putString(llmModeKey, mode.rawValue) }
+    _llmMode.value = mode
+  }
+
+  fun setCloudProvider(provider: CloudProvider) {
+    plainPrefs.edit { putString(llmProviderKey, provider.id) }
+    _cloudProvider.value = provider
+  }
+
+  fun setOpenAiApiKey(value: String) {
+    val trimmed = value.trim()
+    securePrefs.edit { putString(llmOpenAiApiKeyKey, trimmed) }
+    _openAiApiKey.value = trimmed
+  }
+
+  fun setAnthropicApiKey(value: String) {
+    val trimmed = value.trim()
+    securePrefs.edit { putString(llmAnthropicApiKeyKey, trimmed) }
+    _anthropicApiKey.value = trimmed
+  }
+
+  fun setGroqApiKey(value: String) {
+    val trimmed = value.trim()
+    securePrefs.edit { putString(llmGroqApiKeyKey, trimmed) }
+    _groqApiKey.value = trimmed
+  }
+
+  fun setOpenRouterApiKey(value: String) {
+    val trimmed = value.trim()
+    securePrefs.edit { putString(llmOpenRouterApiKeyKey, trimmed) }
+    _openRouterApiKey.value = trimmed
+  }
+
+  fun setElevenLabsAgentId(value: String) {
+    val trimmed = value.trim()
+    plainPrefs.edit { putString(llmElevenLabsAgentIdKey, trimmed) }
+    _elevenLabsAgentId.value = trimmed
+  }
+
+  fun setOpenAiModel(value: String) {
+    val trimmed = value.trim()
+    plainPrefs.edit { putString(llmOpenAiModelKey, trimmed) }
+    _openAiModel.value = trimmed
+  }
+
+  fun setAnthropicModel(value: String) {
+    val trimmed = value.trim()
+    plainPrefs.edit { putString(llmAnthropicModelKey, trimmed) }
+    _anthropicModel.value = trimmed
+  }
+
+  fun setGroqModel(value: String) {
+    val trimmed = value.trim()
+    plainPrefs.edit { putString(llmGroqModelKey, trimmed) }
+    _groqModel.value = trimmed
+  }
+
+  fun setOpenRouterModel(value: String) {
+    val trimmed = value.trim()
+    plainPrefs.edit { putString(llmOpenRouterModelKey, trimmed) }
+    _openRouterModel.value = trimmed
+  }
+
+  fun setElevenLabsModel(value: String) {
+    val trimmed = value.trim()
+    plainPrefs.edit { putString(llmElevenLabsModelKey, trimmed) }
+    _elevenLabsModel.value = trimmed
+  }
+
+  fun setPropAiControlBaseUrl(value: String) {
+    val trimmed = value.trim()
+    plainPrefs.edit { putString(propAiControlBaseUrlKey, trimmed) }
+    _propAiControlBaseUrl.value = trimmed
+  }
+
+  fun setPropAiControlToken(value: String) {
+    val trimmed = value.trim()
+    securePrefs.edit { putString(propAiControlTokenKey, trimmed) }
+    _propAiControlToken.value = trimmed
+  }
+
+  fun setPropAiControlEmail(value: String) {
+    val trimmed = value.trim()
+    plainPrefs.edit { putString(propAiControlEmailKey, trimmed) }
+    _propAiControlEmail.value = trimmed
+  }
+
+  fun setPropAiControlUserId(value: String) {
+    val trimmed = value.trim()
+    plainPrefs.edit { putString(propAiControlUserIdKey, trimmed) }
+    _propAiControlUserId.value = trimmed
+  }
+
+  fun setPropAiControlTenant(id: String, name: String, role: String) {
+    val trimmedId = id.trim()
+    val trimmedName = name.trim()
+    val trimmedRole = role.trim()
+    plainPrefs.edit {
+      putString(propAiControlTenantIdKey, trimmedId)
+      putString(propAiControlTenantNameKey, trimmedName)
+      putString(propAiControlTenantRoleKey, trimmedRole)
+    }
+    _propAiControlTenantId.value = trimmedId
+    _propAiControlTenantName.value = trimmedName
+    _propAiControlTenantRole.value = trimmedRole
+  }
+
+  fun clearPropAiControl() {
+    securePrefs.edit { remove(propAiControlTokenKey) }
+    plainPrefs.edit {
+      remove(propAiControlEmailKey)
+      remove(propAiControlUserIdKey)
+      remove(propAiControlTenantIdKey)
+      remove(propAiControlTenantNameKey)
+      remove(propAiControlTenantRoleKey)
+    }
+    _propAiControlToken.value = ""
+    _propAiControlEmail.value = ""
+    _propAiControlUserId.value = ""
+    _propAiControlTenantId.value = ""
+    _propAiControlTenantName.value = ""
+    _propAiControlTenantRole.value = ""
+  }
+
+  fun setPropAiLicenseBaseUrl(value: String) {
+    val trimmed = value.trim()
+    plainPrefs.edit { putString(propAiLicenseBaseUrlKey, trimmed) }
+    _propAiLicenseBaseUrl.value = trimmed
+  }
+
+  fun setPropAiActivationKey(value: String) {
+    val trimmed = value.trim()
+    securePrefs.edit { putString(propAiLicenseActivationKeyKey, trimmed) }
+    _propAiActivationKey.value = trimmed
+  }
+
+  fun setPropAiActivationToken(value: String) {
+    val trimmed = value.trim()
+    securePrefs.edit { putString(propAiLicenseActivationTokenKey, trimmed) }
+    _propAiActivationToken.value = trimmed
+  }
+
+  fun setPropAiLicenseStatus(status: PropAiLicenseStatus) {
+    val entitlementsJson =
+      JsonArray(status.entitlements.map { JsonPrimitive(it) }).toString()
+    plainPrefs.edit {
+      putBoolean(propAiLicenseValidKey, status.valid)
+      putString(propAiLicenseStatusKey, status.status.orEmpty())
+      putString(propAiLicensePlanKey, status.plan.orEmpty())
+      putString(propAiLicenseEntitlementsKey, entitlementsJson)
+      putString(propAiLicenseExpiresAtKey, status.expiresAt.orEmpty())
+      putString(propAiLicenseGraceUntilKey, status.graceUntil.orEmpty())
+      putString(propAiLicenseRefreshAtKey, status.refreshAt.orEmpty())
+      putInt(propAiLicenseDeviceLimitKey, status.deviceLimit ?: 0)
+      putInt(propAiLicenseDevicesUsedKey, status.devicesUsed ?: 0)
+      putString(propAiLicenseMessageKey, status.message.orEmpty())
+      putString(propAiLicenseCodeKey, status.code.orEmpty())
+      putString(propAiLicenseLastValidatedKey, status.lastValidatedAt.orEmpty())
+    }
+    _propAiLicenseStatus.value = status
+  }
+
+  fun clearPropAiLicenseStatus() {
+    plainPrefs.edit {
+      remove(propAiLicenseValidKey)
+      remove(propAiLicenseStatusKey)
+      remove(propAiLicensePlanKey)
+      remove(propAiLicenseEntitlementsKey)
+      remove(propAiLicenseExpiresAtKey)
+      remove(propAiLicenseGraceUntilKey)
+      remove(propAiLicenseRefreshAtKey)
+      remove(propAiLicenseDeviceLimitKey)
+      remove(propAiLicenseDevicesUsedKey)
+      remove(propAiLicenseMessageKey)
+      remove(propAiLicenseCodeKey)
+      remove(propAiLicenseLastValidatedKey)
+    }
+    _propAiLicenseStatus.value = loadPropAiLicenseStatus()
+  }
+
   private fun loadVoiceWakeMode(): VoiceWakeMode {
     val raw = plainPrefs.getString(voiceWakeModeKey, null)
     val resolved = VoiceWakeMode.fromRawValue(raw)
@@ -310,6 +674,70 @@ class SecurePrefs(context: Context) {
     }
 
     return resolved
+  }
+
+  private fun loadLlmMode(): LlmMode {
+    val raw = plainPrefs.getString(llmModeKey, null)
+    val resolved = LlmMode.fromRawValue(raw)
+    if (raw.isNullOrBlank()) {
+      plainPrefs.edit { putString(llmModeKey, resolved.rawValue) }
+    }
+    return resolved
+  }
+
+  private fun loadCloudProvider(): CloudProvider {
+    val raw = plainPrefs.getString(llmProviderKey, null)
+    if (raw.isNullOrBlank()) {
+      plainPrefs.edit { putString(llmProviderKey, CloudProvider.OpenRouter.id) }
+      return CloudProvider.OpenRouter
+    }
+    return CloudProvider.fromId(raw)
+  }
+
+  private fun loadPropAiControlBaseUrl(): String {
+    val raw = plainPrefs.getString(propAiControlBaseUrlKey, null)?.trim().orEmpty()
+    if (raw.isNotEmpty()) return raw
+    plainPrefs.edit { putString(propAiControlBaseUrlKey, defaultPropAiControlBaseUrl) }
+    return defaultPropAiControlBaseUrl
+  }
+
+  private fun loadPropAiLicenseBaseUrl(): String {
+    val raw = plainPrefs.getString(propAiLicenseBaseUrlKey, null)?.trim().orEmpty()
+    if (raw.isNotEmpty()) return raw
+    plainPrefs.edit { putString(propAiLicenseBaseUrlKey, defaultPropAiLicenseBaseUrl) }
+    return defaultPropAiLicenseBaseUrl
+  }
+
+  private fun loadPropAiLicenseStatus(): PropAiLicenseStatus {
+    val entitlements = loadJsonStringList(propAiLicenseEntitlementsKey) { it }
+    val valid = plainPrefs.getBoolean(propAiLicenseValidKey, false)
+    val status = plainPrefs.getString(propAiLicenseStatusKey, null)?.trim().orEmpty().ifEmpty { null }
+    val plan = plainPrefs.getString(propAiLicensePlanKey, null)?.trim().orEmpty().ifEmpty { null }
+    val expiresAt = plainPrefs.getString(propAiLicenseExpiresAtKey, null)?.trim().orEmpty().ifEmpty { null }
+    val graceUntil = plainPrefs.getString(propAiLicenseGraceUntilKey, null)?.trim().orEmpty().ifEmpty { null }
+    val refreshAt = plainPrefs.getString(propAiLicenseRefreshAtKey, null)?.trim().orEmpty().ifEmpty { null }
+    val deviceLimit = plainPrefs.getInt(propAiLicenseDeviceLimitKey, 0).takeIf { it > 0 }
+    val devicesUsed = plainPrefs.getInt(propAiLicenseDevicesUsedKey, 0).takeIf { it >= 0 }
+    val message = plainPrefs.getString(propAiLicenseMessageKey, null)?.trim().orEmpty().ifEmpty { null }
+    val code = plainPrefs.getString(propAiLicenseCodeKey, null)?.trim().orEmpty().ifEmpty { null }
+    val lastValidatedAt =
+      plainPrefs.getString(propAiLicenseLastValidatedKey, null)?.trim().orEmpty().ifEmpty { null }
+
+    return PropAiLicenseStatus(
+      valid = valid,
+      status = status,
+      plan = plan,
+      entitlements = entitlements,
+      expiresAt = expiresAt,
+      graceUntil = graceUntil,
+      refreshAt = refreshAt,
+      deviceLimit = deviceLimit,
+      devicesUsed = devicesUsed,
+      activationToken = null,
+      message = message,
+      code = code,
+      lastValidatedAt = lastValidatedAt,
+    )
   }
 
   private fun loadLocationMode(): LocationMode {
@@ -338,6 +766,40 @@ class SecurePrefs(context: Context) {
       WakeWords.sanitize(decoded, defaultWakeWords)
     } catch (_: Throwable) {
       defaultWakeWords
+    }
+  }
+
+  private fun loadChatListeningPackages(): List<String> {
+    return loadJsonStringList(chatListeningPackagesKey, ::sanitizeChatListeningPackages)
+  }
+
+  private fun loadChatListeningConversationFilters(): List<String> {
+    return loadJsonStringList(
+      chatListeningConversationFiltersKey,
+      ::sanitizeChatListeningConversationFilters,
+    )
+  }
+
+  private fun loadJsonStringList(
+    key: String,
+    sanitizer: (List<String>) -> List<String>,
+  ): List<String> {
+    val raw = plainPrefs.getString(key, null)?.trim()
+    if (raw.isNullOrEmpty()) return emptyList()
+    return try {
+      val element = json.parseToJsonElement(raw)
+      val array = element as? JsonArray ?: return emptyList()
+      val decoded =
+        array.mapNotNull { item ->
+          when (item) {
+            is JsonNull -> null
+            is JsonPrimitive -> item.content.trim().takeIf { it.isNotEmpty() }
+            else -> null
+          }
+        }
+      sanitizer(decoded)
+    } catch (_: Throwable) {
+      emptyList()
     }
   }
 }
